@@ -1,0 +1,7 @@
+{
+  "id": "duplicate_evidence_prevention",
+  "kind": "code_invariant",
+  "description": "The same Slack message returned by two different tool calls (channel history + thread fetch) must be deduped, not double-counted as evidence.",
+  "delegate_file": "packages/agent/src/runner.test.ts",
+  "delegate_test": "drops a later duplicate with the same source and id, keeping the first"
+}

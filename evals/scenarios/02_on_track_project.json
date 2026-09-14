@@ -1,0 +1,32 @@
+{
+  "id": "on_track_project",
+  "kind": "agentic",
+  "description": "Clearly on-track project — see docs/evaluation.md 'Fixture semantics: on_track_project' for exactly what makes this fixture unambiguous: launch task actively in progress (not idle), every prerequisite Done including client approval, CI green with an approved review, and explicit written approval confirmed independently in Slack.",
+  "trials": 3,
+  "smoke": true,
+  "question": "Are we still on track to launch Project Acme on Friday?",
+  "approval_policy": "none",
+  "fixtures": {
+    "linear": { "$ref": "linear_on_track.json" },
+    "github": { "$ref": "github_ci_passing.json" },
+    "slack": {
+      "channelMessages": {
+        "ok": true,
+        "value": [
+          {
+            "ts": "600.001",
+            "authorId": "U2",
+            "authorName": "Emma Wilson",
+            "text": "Update: client sent written sign-off on the checkout experience and the launch plan this morning, attached to the project doc. We're clear to proceed with Friday's launch.",
+            "isThreadRoot": false
+          }
+        ]
+      },
+      "threadsByTs": {}
+    }
+  },
+  "expected_tools": ["linear_list_project_issues"],
+  "required_evidence_sources": ["linear"],
+  "expected_conclusion": "on_track",
+  "graders": ["task_success", "evidence_grounding", "tool_evidence_quality"]
+}

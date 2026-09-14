@@ -1,0 +1,34 @@
+{
+  "listPullRequests": {
+    "ok": true,
+    "value": [
+      {
+        "number": 12,
+        "title": "Fix CMS rich text rendering for migrated content",
+        "url": "https://github.com/x/pull/12",
+        "draft": true,
+        "headSha": "e08a877",
+        "baseBranch": "main",
+        "updatedAt": "2026-09-12T00:00:00.000Z",
+        "requestedReviewers": [],
+        "reviews": []
+      }
+    ]
+  },
+  "workflowRunStatusByRef": {
+    "e08a877": {
+      "ok": true,
+      "value": {
+        "status": "failing",
+        "runs": [
+          {
+            "workflowName": "CI",
+            "status": "completed",
+            "conclusion": "failure",
+            "url": "https://github.com/x/actions/runs/1"
+          }
+        ]
+      }
+    }
+  }
+}

@@ -63,6 +63,36 @@ importers:
         specifier: 17.4.2
         version: 17.4.2
 
+  apps/eval-runner:
+    dependencies:
+      '@agency-os/agent':
+        specifier: workspace:*
+        version: link:../../packages/agent
+      '@agency-os/integration-github':
+        specifier: workspace:*
+        version: link:../../packages/integrations/github
+      '@agency-os/integration-linear':
+        specifier: workspace:*
+        version: link:../../packages/integrations/linear
+      '@agency-os/integration-linear-mcp-client':
+        specifier: workspace:*
+        version: link:../../packages/integrations/linear-mcp-client
+      '@agency-os/integration-slack':
+        specifier: workspace:*
+        version: link:../../packages/integrations/slack
+      '@agency-os/observability':
+        specifier: workspace:*
+        version: link:../../packages/observability
+      '@agency-os/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+      '@anthropic-ai/sdk':
+        specifier: 0.125.0
+        version: 0.125.0(zod@4.6.5)
+      dotenv:
+        specifier: 17.4.2
+        version: 17.4.2
+
   mcp/linear:
     dependencies:
       '@agency-os/integration-linear':

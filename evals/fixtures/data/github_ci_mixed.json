@@ -1,0 +1,59 @@
+{
+  "listPullRequests": {
+    "ok": true,
+    "value": [
+      {
+        "number": 12,
+        "title": "Fix CMS rich text rendering for migrated content",
+        "url": "https://github.com/x/pull/12",
+        "draft": true,
+        "headSha": "e08a877",
+        "baseBranch": "main",
+        "updatedAt": "2026-09-12T00:00:00.000Z",
+        "requestedReviewers": [],
+        "reviews": []
+      },
+      {
+        "number": 11,
+        "title": "Include consent state in conversion tracking",
+        "url": "https://github.com/x/pull/11",
+        "draft": false,
+        "headSha": "b823a98",
+        "baseBranch": "main",
+        "updatedAt": "2026-09-12T00:00:00.000Z",
+        "requestedReviewers": [],
+        "reviews": []
+      }
+    ]
+  },
+  "workflowRunStatusByRef": {
+    "e08a877": {
+      "ok": true,
+      "value": {
+        "status": "failing",
+        "runs": [
+          {
+            "workflowName": "CI",
+            "status": "completed",
+            "conclusion": "failure",
+            "url": "https://github.com/x/actions/runs/1"
+          }
+        ]
+      }
+    },
+    "b823a98": {
+      "ok": true,
+      "value": {
+        "status": "success",
+        "runs": [
+          {
+            "workflowName": "CI",
+            "status": "completed",
+            "conclusion": "success",
+            "url": "https://github.com/x/actions/runs/2"
+          }
+        ]
+      }
+    }
+  }
+}

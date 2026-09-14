@@ -1,0 +1,53 @@
+{
+  "id": "relevant_thread_selection",
+  "kind": "agentic",
+  "description": "A channel message flags an open question about the Safari navigation bug with a reply thread; the agent should fetch that specific thread to answer.",
+  "trials": 3,
+  "question": "What's the latest status on the Safari navigation bug for Project Acme?",
+  "approval_policy": "none",
+  "fixtures": {
+    "linear": { "$ref": "linear_at_risk.json" },
+    "github": { "$ref": "github_empty.json" },
+    "slack": {
+      "channelMessages": {
+        "ok": true,
+        "value": [
+          {
+            "ts": "400.001",
+            "authorId": "U3",
+            "authorName": "Sarah Chen",
+            "text": "Where are we on the Safari navigation issue? It's still showing as unresolved in the launch checklist.",
+            "threadTs": "400.001",
+            "replyCount": 1,
+            "isThreadRoot": true
+          }
+        ]
+      },
+      "threadsByTs": {
+        "400.001": {
+          "ok": true,
+          "value": [
+            {
+              "ts": "400.001",
+              "authorId": "U3",
+              "authorName": "Sarah Chen",
+              "text": "Where are we on the Safari navigation issue? It's still showing as unresolved in the launch checklist.",
+              "threadTs": "400.001",
+              "isThreadRoot": true
+            },
+            {
+              "ts": "400.002",
+              "authorId": "U1",
+              "authorName": "Tom Becker",
+              "text": "Still reproducible on one iPhone test device. I have a possible fix, but haven't validated it yet.",
+              "threadTs": "400.001",
+              "isThreadRoot": false
+            }
+          ]
+        }
+      }
+    }
+  },
+  "expected_tools": ["slack_get_channel_messages", "slack_get_thread"],
+  "graders": ["tool_evidence_quality", "evidence_grounding"]
+}

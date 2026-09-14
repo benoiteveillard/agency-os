@@ -1,0 +1,18 @@
+{
+  "id": "at_risk_project",
+  "kind": "agentic",
+  "description": "Clearly at-risk project: open urgent blockers, an overdue approval, failing CI on the affected PR.",
+  "trials": 3,
+  "smoke": true,
+  "question": "Are we still on track to launch Project Acme on Friday?",
+  "approval_policy": "none",
+  "fixtures": {
+    "linear": { "$ref": "linear_at_risk.json" },
+    "github": { "$ref": "github_ci_failing.json" },
+    "slack": { "$ref": "slack_empty.json" }
+  },
+  "expected_tools": ["linear_list_project_issues"],
+  "required_evidence_sources": ["linear"],
+  "expected_conclusion": "at_risk",
+  "graders": ["task_success", "evidence_grounding", "tool_evidence_quality"]
+}

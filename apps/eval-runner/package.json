@@ -1,0 +1,20 @@
+{
+  "name": "@agency-os/eval-runner",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@agency-os/agent": "workspace:*",
+    "@agency-os/integration-github": "workspace:*",
+    "@agency-os/integration-linear": "workspace:*",
+    "@agency-os/integration-linear-mcp-client": "workspace:*",
+    "@agency-os/integration-slack": "workspace:*",
+    "@agency-os/observability": "workspace:*",
+    "@agency-os/shared": "workspace:*",
+    "@anthropic-ai/sdk": "0.125.0",
+    "dotenv": "17.4.2"
+  }
+}

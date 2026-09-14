@@ -1,0 +1,81 @@
+{
+  "listProjectIssues": {
+    "ok": true,
+    "value": {
+      "project": {
+        "id": "p1",
+        "name": "Acme Website Migration",
+        "url": "https://linear.app/x/project/p1",
+        "targetDate": "2026-09-18",
+        "health": "atRisk"
+      },
+      "issues": [
+        {
+          "id": "i24",
+          "identifier": "JUS-24",
+          "title": "Launch production website",
+          "url": "https://linear.app/x/JUS-24",
+          "state": "Todo",
+          "stateType": "unstarted",
+          "priorityLabel": "Urgent",
+          "dueDate": "2026-09-18",
+          "overdue": false,
+          "updatedAt": "2026-09-10T00:00:00.000Z",
+          "blockedBy": [
+            {
+              "id": "i6",
+              "identifier": "JUS-6",
+              "title": "Obtain client approval for checkout experience"
+            },
+            {
+              "id": "i7",
+              "identifier": "JUS-7",
+              "title": "Complete CMS content migration"
+            }
+          ],
+          "blocks": []
+        },
+        {
+          "id": "i6",
+          "identifier": "JUS-6",
+          "title": "Obtain client approval for checkout experience",
+          "url": "https://linear.app/x/JUS-6",
+          "state": "Todo",
+          "stateType": "unstarted",
+          "priorityLabel": "High",
+          "dueDate": "2026-09-08",
+          "overdue": true,
+          "updatedAt": "2026-09-09T00:00:00.000Z",
+          "blockedBy": [],
+          "blocks": [
+            {
+              "id": "i24",
+              "identifier": "JUS-24",
+              "title": "Launch production website"
+            }
+          ]
+        },
+        {
+          "id": "i7",
+          "identifier": "JUS-7",
+          "title": "Complete CMS content migration",
+          "url": "https://linear.app/x/JUS-7",
+          "state": "In Progress",
+          "stateType": "started",
+          "priorityLabel": "Urgent",
+          "dueDate": null,
+          "overdue": false,
+          "updatedAt": "2026-09-11T00:00:00.000Z",
+          "blockedBy": [],
+          "blocks": [
+            {
+              "id": "i24",
+              "identifier": "JUS-24",
+              "title": "Launch production website"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

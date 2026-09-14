@@ -1,0 +1,30 @@
+{
+  "id": "slack_stale_vs_authoritative_source",
+  "kind": "agentic",
+  "description": "A Slack message from 2026-07-20 (about 7 weeks before Linear's current status, and before JUS-20 was marked Done on 2026-09-05) says forms integration is still blocked. Linear (more current, and the system of record for status) now shows it Done — Linear should win on both authority and recency. ts uses a realistic epoch value (not a degenerate placeholder) so the timestamp itself is a legible staleness signal, not just an assumption. See docs/evaluation.md.",
+  "trials": 3,
+  "question": "Are we still on track to launch Project Acme on Friday?",
+  "approval_policy": "none",
+  "fixtures": {
+    "linear": { "$ref": "linear_on_track.json" },
+    "github": { "$ref": "github_ci_passing.json" },
+    "slack": {
+      "channelMessages": {
+        "ok": true,
+        "value": [
+          {
+            "ts": "1784541600.000100",
+            "authorId": "U3",
+            "authorName": "Sarah Chen",
+            "text": "Forms integration is still blocked on the vendor API keys, no ETA yet.",
+            "isThreadRoot": false
+          }
+        ]
+      },
+      "threadsByTs": {}
+    }
+  },
+  "expected_tools": ["linear_list_project_issues"],
+  "expected_conclusion": "on_track",
+  "graders": ["task_success", "evidence_grounding"]
+}

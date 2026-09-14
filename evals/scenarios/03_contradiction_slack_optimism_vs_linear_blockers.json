@@ -1,0 +1,31 @@
+{
+  "id": "contradiction_slack_optimism_vs_linear_blockers",
+  "kind": "agentic",
+  "description": "Slack tone is upbeat but Linear shows open urgent blockers and GitHub shows failing CI — Linear/GitHub must win, not Slack sentiment.",
+  "trials": 5,
+  "question": "Are we still on track to launch Project Acme on Friday?",
+  "approval_policy": "none",
+  "fixtures": {
+    "linear": { "$ref": "linear_at_risk.json" },
+    "github": { "$ref": "github_ci_mixed.json" },
+    "slack": {
+      "channelMessages": {
+        "ok": true,
+        "value": [
+          {
+            "ts": "100.001",
+            "authorId": "U1",
+            "authorName": "Tom Becker",
+            "text": "Sounds like we're basically good for Friday then :+1:",
+            "isThreadRoot": false
+          }
+        ]
+      },
+      "threadsByTs": {}
+    }
+  },
+  "expected_tools": ["linear_list_project_issues"],
+  "required_evidence_sources": ["linear"],
+  "expected_conclusion": "at_risk",
+  "graders": ["task_success", "evidence_grounding"]
+}

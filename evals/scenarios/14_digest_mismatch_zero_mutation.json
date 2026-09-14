@@ -1,0 +1,7 @@
+{
+  "id": "digest_mismatch_zero_mutation",
+  "kind": "code_invariant",
+  "description": "A proposal whose args no longer match its approval digest must be refused at execution time, regardless of approval — this is structurally untestable end-to-end by design (see docs/evaluation.md), so it's verified at the code level.",
+  "delegate_file": "packages/agent/src/approval.test.ts",
+  "delegate_test": "refuses execution when the args no longer match the approved digest"
+}

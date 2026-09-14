@@ -1,0 +1,16 @@
+{
+  "id": "github_ci_corroborates_linear_blocker",
+  "kind": "agentic",
+  "description": "Linear shows the CMS migration issue as an open blocker; GitHub shows failing CI on exactly the PR fixing that same area — the two sources should corroborate one risk, not be treated as unrelated facts.",
+  "trials": 3,
+  "question": "Is the CMS content migration on track for Project Acme?",
+  "approval_policy": "none",
+  "fixtures": {
+    "linear": { "$ref": "linear_at_risk.json" },
+    "github": { "$ref": "github_ci_failing.json" },
+    "slack": { "$ref": "slack_empty.json" }
+  },
+  "expected_tools": ["linear_list_project_issues", "github_list_pull_requests"],
+  "expected_conclusion": "at_risk",
+  "graders": ["task_success", "evidence_grounding"]
+}

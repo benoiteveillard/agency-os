@@ -1,0 +1,15 @@
+{
+  "id": "insufficient_evidence",
+  "kind": "agentic",
+  "description": "The project has no issues, no PRs, and no Slack history at all — the agent should say it cannot determine status, not guess.",
+  "trials": 3,
+  "question": "Are we still on track to launch Project Acme on Friday?",
+  "approval_policy": "none",
+  "fixtures": {
+    "linear": { "$ref": "linear_minimal.json" },
+    "github": { "$ref": "github_empty.json" },
+    "slack": { "$ref": "slack_empty.json" }
+  },
+  "expected_conclusion": "insufficient_evidence",
+  "graders": ["task_success"]
+}

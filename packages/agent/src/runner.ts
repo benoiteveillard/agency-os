@@ -17,6 +17,7 @@ import {
   type ProposalState,
 } from "./tools.js";
 import { buildSystemPrompt } from "./prompts.js";
+import { toolCallAttributes } from "./trace-attributes.js";
 
 const DEFAULT_MODEL = "claude-sonnet-5";
 const MAX_TOKENS = 4096;
@@ -135,7 +136,13 @@ export async function investigate(
     for (const call of toolUses) {
       const toolSpan = tracer.startSpan(`tool.${call.name}`, "tool", {
         parent: modelSpan,
-        attributes: { toolName: call.name },
+        attributes: {
+          toolName: call.name,
+          ...toolCallAttributes(
+            call.name,
+            call.input as Record<string, unknown>,
+          ),
+        },
       });
       const start = Date.now();
       try {

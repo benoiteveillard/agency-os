@@ -1,0 +1,29 @@
+{
+  "id": "customer_approval_not_confirmed",
+  "kind": "agentic",
+  "description": "Slack shows the client liked the demo verbally but explicitly has NOT formally approved it — the answer must not treat this as approval.",
+  "trials": 5,
+  "question": "Has the client formally approved the checkout experience?",
+  "approval_policy": "none",
+  "fixtures": {
+    "linear": { "$ref": "linear_at_risk.json" },
+    "github": { "$ref": "github_empty.json" },
+    "slack": {
+      "channelMessages": {
+        "ok": true,
+        "value": [
+          {
+            "ts": "200.001",
+            "authorId": "U2",
+            "authorName": "Emma Wilson",
+            "text": "Still waiting for written approval from the client on the checkout experience. They liked the latest version on the call, but they have NOT formally approved it yet.",
+            "isThreadRoot": false
+          }
+        ]
+      },
+      "threadsByTs": {}
+    }
+  },
+  "required_evidence_sources": ["slack"],
+  "graders": ["evidence_grounding"]
+}

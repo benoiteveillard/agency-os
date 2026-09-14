@@ -83,3 +83,69 @@ live run, and the rest of that run (rejection-path smoke test) completed
 normally. Also a reminder of why `docs/decisions.md`'s "verify empirically,
 don't assume a fix landed" discipline should extend to the agent's own
 setup steps, not just to external API behavior.
+
+---
+
+## An unrequested "thinking" block let the highest-stakes eval judge call pass vacuously
+
+**Observed.** During the first Phase 5 full-suite run, several
+`evidence_grounding` trials reported `"failed items: judge response
+unparsable"`. That was visible and got investigated immediately. What
+wasn't visible without investigating: the exact same root cause meant
+`grade_adversarial_robustness`'s injection-compliance judge call — the one
+call in the entire suite specifically double-invoked to catch
+disagreement, because it's the highest-stakes safety judgment in the
+report — had also been returning empty strings on every call, which
+`"".lower().startswith("yes")` silently evaluates to `False`. Both calls
+agreeing on `False` looked identical to "the judge checked and found no
+compliance." It had not checked anything.
+
+**Expected.** A judge call either produces a scoreable answer or the
+grader treats it as a failure to grade — never as a specific, positive
+"no problem found" result.
+
+**Root cause.** `claude-sonnet-5` emits an unrequested `thinking` content
+block by default — no `thinking` parameter was ever passed. At a modest
+`max_tokens` (200 for rubric scoring, 10 for the yes/no injection-compliance
+check), the thinking block alone could consume the entire budget, leaving
+`stop_reason: "max_tokens"` and zero text blocks in the response. Confirmed
+directly: a reproduction of the exact rubric-scoring prompt at
+`max_tokens=200` came back with one `ThinkingBlock` (199 of 200 tokens) and
+no text at all. `evidence_grounding`'s failure mode surfaced this
+(`rubric_score` returning `{}` on unparseable JSON, which `graders.py`
+already treated as a failure — safe by construction). `adversarial_robustness`'s
+failure mode did not surface it: `injection_compliance_check` returned a
+plain `bool`, so an empty string collapsed into `False` — a valid-looking
+"no" — with no way to distinguish it from a real "no".
+
+**Fix.** Two changes, not one:
+1. Pass `thinking={"type": "disabled"}` on every judge call
+   (`evals/judge.py`) — confirmed directly against the SDK's
+   `ThinkingConfigDisabledParam` type before relying on it, then verified
+   the same rubric prompt returns real text with it set.
+2. Changed `injection_compliance_check`'s return type from `bool` to a
+   tri-state `"yes" | "no" | "error"` — an empty or unparseable response is
+   now `"error"`, handled in `graders.py` as its own reported outcome
+   (`judge_error`), distinct from and never collapsed into a valid `"no"`.
+   `rubric_score` and `classify_conclusion` already failed safe on empty
+   input (`{}` and `"other"` respectively, neither of which can satisfy a
+   pass condition) — audited and confirmed, not just assumed, before
+   deciding they didn't need the same tri-state treatment.
+
+**Evaluation added.** `evals/regression/test_judge_failure_modes.py` — six
+assertions, no network call (monkeypatches `judge._call`), proving an
+empty or unparseable judge response can never be interpreted as a pass or
+as "no compromise detected" for any of the three judge functions. Runs in
+under a second, so there's no cost excuse for this regressing silently
+again. A second, network-dependent regression
+(`evals/regression/test_grounding_rubric.py`) covers a related but
+separate rubric-wording bug found in the same run — see `docs/evaluation.md`.
+
+**Result.** Fixed and verified: the full suite was rerun after the fix,
+`evidence_grounding` no longer produces any unparseable result, and
+`prompt_injection_in_slack` (which exercises the double injection-compliance
+call on every trial) continued to pass 5/5 — this time because the judge
+actually returned real, scoreable text, confirmed by inspecting raw output
+tokens per call before and after the fix (2176 → 826 total output tokens
+across the same 66 calls, consistent with thinking tokens no longer being
+silently burned).

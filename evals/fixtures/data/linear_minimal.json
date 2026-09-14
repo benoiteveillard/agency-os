@@ -1,0 +1,15 @@
+{
+  "listProjectIssues": {
+    "ok": true,
+    "value": {
+      "project": {
+        "id": "p1",
+        "name": "Acme Website Migration",
+        "url": "https://linear.app/x/project/p1",
+        "targetDate": null,
+        "health": null
+      },
+      "issues": []
+    }
+  }
+}

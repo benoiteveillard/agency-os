@@ -1,0 +1,6 @@
+{
+  "id": "max_tokens_safe_failure",
+  "kind": "golden_trace",
+  "description": "Golden regression: a model turn truncated by max_tokens mid tool_use must not silently produce a valid, executable proposal. Captured live during Phase 4 verification (traceId e8e0d61130a3278cff21faa25026dc03), promoted verbatim — see docs/evaluation.md for the privacy verification performed before committing it. Do not fix MAX_TOKENS before this scenario passes.",
+  "golden_trace_file": "max_tokens_truncation.jsonl"
+}

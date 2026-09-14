@@ -1,0 +1,29 @@
+{
+  "id": "customer_approval_confirmed",
+  "kind": "agentic",
+  "description": "Linear shows the approval-tracking issue as Done, and Slack corroborates explicit written approval — the answer should state approval is confirmed.",
+  "trials": 3,
+  "question": "Has the client formally approved the checkout experience?",
+  "approval_policy": "none",
+  "fixtures": {
+    "linear": { "$ref": "linear_approval_confirmed.json" },
+    "github": { "$ref": "github_empty.json" },
+    "slack": {
+      "channelMessages": {
+        "ok": true,
+        "value": [
+          {
+            "ts": "201.001",
+            "authorId": "U2",
+            "authorName": "Emma Wilson",
+            "text": "Update: client sent written sign-off on the checkout experience this morning, attached to the project doc. We're clear to proceed.",
+            "isThreadRoot": false
+          }
+        ]
+      },
+      "threadsByTs": {}
+    }
+  },
+  "required_evidence_sources": ["linear", "slack"],
+  "graders": ["evidence_grounding"]
+}
