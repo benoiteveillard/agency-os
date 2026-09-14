@@ -1,0 +1,16 @@
+{
+  "name": "@agency-os/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@agency-os/agent": "workspace:*",
+    "@agency-os/integration-github": "workspace:*",
+    "@agency-os/integration-linear": "workspace:*",
+    "@agency-os/shared": "workspace:*",
+    "dotenv": "17.4.2"
+  }
+}
