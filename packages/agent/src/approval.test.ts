@@ -5,6 +5,7 @@ import {
   type ProposedAction,
 } from "@agency-os/shared";
 import type { IssueTracker, ProjectIssue } from "@agency-os/integration-linear";
+import { Tracer } from "@agency-os/observability";
 import { reviewAndExecute, type ReviewAndExecuteDeps } from "./approval.js";
 
 const args: LinearCreateIssueArgs = {
@@ -47,6 +48,7 @@ const fakeCreatedIssue: ProjectIssue = {
 function makeDeps(
   overrides: Partial<ReviewAndExecuteDeps> = {},
 ): ReviewAndExecuteDeps {
+  const tracer = new Tracer();
   return {
     promptForApproval: vi.fn(async () => true),
     issueWriter: {
@@ -56,6 +58,8 @@ function makeDeps(
       listProjectIssues: vi.fn(),
       getIssue: vi.fn(async () => fakeCreatedIssue),
     } as unknown as IssueTracker,
+    tracer,
+    parentSpan: tracer.startSpan("agent.run", "run"),
     ...overrides,
   };
 }
@@ -85,6 +89,14 @@ describe("reviewAndExecute", () => {
       url: "https://linear.app/justa-agence/issue/JUS-30",
     });
     expect(deps.issueWriter.createIssue).toHaveBeenCalledWith(args);
+
+    const names = deps.tracer.getSpans().map((span) => span.name);
+    expect(names).toEqual([
+      "agent.run",
+      "approval.decision",
+      "action.execute",
+      "action.confirm",
+    ]);
   });
 
   it("refuses execution when the args no longer match the approved digest", async () => {

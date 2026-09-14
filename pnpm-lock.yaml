@@ -53,6 +53,9 @@ importers:
       '@agency-os/integration-slack':
         specifier: workspace:*
         version: link:../../packages/integrations/slack
+      '@agency-os/observability':
+        specifier: workspace:*
+        version: link:../../packages/observability
       '@agency-os/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -83,6 +86,9 @@ importers:
       '@agency-os/integration-slack':
         specifier: workspace:*
         version: link:../integrations/slack
+      '@agency-os/observability':
+        specifier: workspace:*
+        version: link:../observability
       '@agency-os/shared':
         specifier: workspace:*
         version: link:../shared
@@ -129,6 +135,8 @@ importers:
       '@slack/web-api':
         specifier: 8.1.1
         version: 8.1.1
+
+  packages/observability: {}
 
   packages/shared: {}
 

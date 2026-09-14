@@ -1,9 +1,10 @@
 # Architecture
 
-Status: Phase 0 + Phase 1 + Phase 1.5 + Phase 2 + Phase 3. No UI, no
-observability infrastructure yet — see `docs/decisions.md` for why each is
-deferred. Phase 3 adds the first write capability (one Linear issue
-creation, human-approved) — see "Write capability" below.
+Status: Phase 0 + Phase 1 + Phase 1.5 + Phase 2 + Phase 3 + Phase 4. No UI
+yet — see `docs/decisions.md` for why. Phase 3 adds the first write
+capability (one Linear issue creation, human-approved) — see "Write
+capability" below. Phase 4 adds tracing/observability — see "Observability"
+below.
 
 ## Data flow
 
@@ -71,8 +72,9 @@ packages/integrations/linear-writer — LinearIssueWriter (the ONLY write-capabl
 packages/integrations/github        — PullRequestSource interface + GitHubPullRequestSource
 packages/integrations/slack         — SlackMessageSource interface + SlackConversationSource
 packages/agent                      — tool schemas, tool dispatch, system prompt, the loop, propose_linear_issue, reviewAndExecute
+packages/observability               — Tracer/Span/SpanRecord, ID generation, error categorization, trace tree + JSONL formatting — zero OTel dependency (see docs/decisions.md)
 mcp/linear                          — custom Linear MCP server (McpServer + tool handlers)
-apps/cli                            — env wiring, MCP client lifecycle, readline approval prompt, audit output
+apps/cli                            — env wiring, MCP client lifecycle, readline approval prompt, audit output, trace tree/file output
 ```
 
 Business logic (`packages/agent`) depends on the `IssueTracker` /
@@ -107,11 +109,12 @@ since neither is knowable until the corresponding synthetic resource exists
 One primary agent, no sub-agents (README §11, AGENTS.md §20). The tool-use
 loop in `packages/agent/src/runner.ts` is hand-rolled rather than using the
 Anthropic SDK's beta `toolRunner()` helper, so that tool dispatch, error
-surfacing, and an event hook (`onEvent`) are explicit and are the natural
-place to add human-approval gating once write tools exist (Phase 3). Moving
-Linear behind MCP (Phase 1.5) deliberately did not touch this file at all —
-the loop only ever talks to `executeTool()`, which only ever talks to
-`IssueTracker`/`PullRequestSource` interfaces.
+surfacing, and tracing (`packages/observability`, Phase 4 — see below) are
+explicit and were the natural place to add human-approval gating once write
+tools existed (Phase 3). Moving Linear behind MCP (Phase 1.5) deliberately
+did not touch this file at all — the loop only ever talks to
+`executeTool()`, which only ever talks to `IssueTracker`/`PullRequestSource`
+interfaces.
 
 Every tool call is wrapped in try/catch: a failure becomes an `is_error`
 tool_result so Claude sees it and can say "I couldn't retrieve X" instead of
@@ -297,3 +300,70 @@ Phase 1) is used by the MCP server and by the read-back after a write.
 `LINEAR_API_KEY_WRITE` (a separate key, "Create issues" scope — narrower
 than "Write" — restricted to one team) is used exclusively inside
 `reviewAndExecute`/`LinearIssueWriter`, constructed only in `apps/cli`.
+
+## Observability (Phase 4)
+
+`packages/observability` is a small, dependency-free package: an
+OpenTelemetry-_shaped_ data model (`SpanRecord`: 128-bit trace ID, 64-bit
+span ID via `node:crypto`, explicit `parentSpanId`, category, tri-state
+status, scalar-only attributes) with no `@opentelemetry/*` runtime
+dependency. See `docs/decisions.md`'s "Observability" entry for the full
+Option A/B/C comparison and the Cloudflare-as-exporter framing.
+
+```text
+apps/cli/src/index.ts:
+  tracer = new Tracer()
+  rootSpan = tracer.startSpan("agent.run", "run", {...})   — owns the WHOLE
+    lifecycle: investigation + approval + execution are one trace, not three
+
+  investigate(question, deps, { tracer, parentSpan: rootSpan })
+    per loop turn:  model.turn span (turn index, stopReason, token usage)
+      per tool_use:   tool.<name> span (evidenceCount, or error+category)
+
+  if result.proposedAction:
+    reviewAndExecute(action, { ..., tracer, parentSpan: rootSpan })
+      approval.decision span (wraps promptForApproval(), records decision)
+      if approved:
+        action.execute span (wraps issueWriter.createIssue(), or ends
+          immediately with category "digest_mismatch" on a digest check
+          failure)
+        action.confirm span (wraps the post-write issueTracker.getIssue()
+          read-back)
+
+  rootSpan.end("ok" | "error")
+  formatTraceTree(tracer.getSpans())   → printed to stderr
+  serializeTraceFile(spans, { traceId, question, finalAnswer,
+    resultMetadata }) → written to .traces/<traceId>.jsonl (gitignored,
+    one file per run)
+```
+
+**Trace file shape.** One JSON line per span (`{type: "span", ...SpanRecord}`),
+then exactly one `{type: "run_summary", traceId, question, finalAnswer,
+resultMetadata}` line — the target shape a future Phase 5 eval reads
+directly, without scraping CLI stdout. `resultMetadata` is built by
+`apps/cli` from data it already has (`evidenceCount`, `toolCallCount`,
+`proposedAction`, `approvalDecision`, `executionOutcome`), not derived from
+span internals.
+
+**Privacy is a type-level guarantee, not a convention.** `AttributeValue =
+string | number | boolean` — attaching a tool payload, Slack message, or API
+response object as a span attribute is a compile error. `question` on the
+root span is truncated to 200 chars; error messages are capped at 200 chars
+by `truncateErrorMessage()`. No prompts, no tool payloads, no raw Slack/issue
+text are ever written to a span attribute or the trace file — evidence
+summaries live only in `InvestigationResult.evidence`, which this package
+never touches.
+
+**Error categorization** (`ErrorCategory`: `model_api`, `mcp_transport`,
+`saas_api`, `tool_validation`, `digest_mismatch`, `unknown`) is derived from
+each integration's existing error-message prefix conventions
+(`redact.ts`'s `categorizeError()`), not from inspecting SDK error classes —
+keeps the package dependency-free. There is deliberately no category for
+"prompt-injection evidence encountered": see `docs/decisions.md` (Phase 2 and
+Phase 4 entries) for why automatic detection was rejected both times.
+
+**No MCP server-side tracing** — `mcp/linear` is untraced this phase; a
+client-side span around the MCP `Client.callTool()` call (via
+`McpLinearIssueTracker`'s existing `"Linear MCP tool ... failed:"` error
+convention, categorized as `mcp_transport`) is the only visibility into that
+boundary for now.

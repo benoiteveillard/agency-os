@@ -5,6 +5,12 @@ import type {
   ToolCallRecord,
 } from "@agency-os/shared";
 import {
+  categorizeError,
+  truncateErrorMessage,
+  type Span,
+  type Tracer,
+} from "@agency-os/observability";
+import {
   TOOLS,
   executeTool,
   type AgentDependencies,
@@ -16,13 +22,6 @@ const DEFAULT_MODEL = "claude-sonnet-5";
 const MAX_TOKENS = 4096;
 // Safety cap on the tool-use loop so a confused model can't run forever.
 const MAX_TOOL_TURNS = 8;
-
-export interface RunnerEvent {
-  type: "model_call" | "tool_call";
-  detail: Record<string, unknown>;
-}
-
-export type RunnerEventHandler = (event: RunnerEvent) => void;
 
 /**
  * The same piece of evidence can legitimately be returned by two different
@@ -46,8 +45,9 @@ export function dedupeEvidence(evidence: Evidence[]): Evidence[] {
 export interface InvestigateOptions {
   anthropicApiKey: string;
   model?: string;
-  /** Hook for future tracing/observability; no-op by default. */
-  onEvent?: RunnerEventHandler;
+  /** The whole CLI lifecycle (investigation + approval + execution) is one trace — see apps/cli/src/index.ts, which owns the tracer and the agent.run root span. */
+  tracer: Tracer;
+  parentSpan: Span;
 }
 
 /**
@@ -62,7 +62,7 @@ export async function investigate(
 ): Promise<InvestigationResult> {
   const client = new Anthropic({ apiKey: options.anthropicApiKey });
   const model = options.model ?? DEFAULT_MODEL;
-  const onEvent: RunnerEventHandler = options.onEvent ?? (() => {});
+  const { tracer, parentSpan } = options;
   const system = buildSystemPrompt(deps.projectRegistry);
 
   const messages: Anthropic.MessageParam[] = [
@@ -75,18 +75,41 @@ export async function investigate(
   const proposalState: ProposalState = {};
 
   for (let turn = 0; turn < MAX_TOOL_TURNS; turn++) {
-    const response = await client.messages.create({
-      model,
-      max_tokens: MAX_TOKENS,
-      system,
-      tools: TOOLS,
-      messages,
+    const modelSpan = tracer.startSpan("model.turn", "model", {
+      parent: parentSpan,
+      attributes: { turn },
     });
 
-    onEvent({
-      type: "model_call",
-      detail: { turn, stopReason: response.stop_reason, usage: response.usage },
-    });
+    let response: Anthropic.Message;
+    try {
+      response = await client.messages.create({
+        model,
+        max_tokens: MAX_TOKENS,
+        system,
+        tools: TOOLS,
+        messages,
+      });
+    } catch (err) {
+      const message = (err as Error).message;
+      modelSpan.end("error", {
+        category: "model_api",
+        message: truncateErrorMessage(message),
+      });
+      throw err;
+    }
+
+    modelSpan.setAttribute("stopReason", response.stop_reason ?? "unknown");
+    modelSpan.setAttribute("inputTokens", response.usage.input_tokens);
+    modelSpan.setAttribute("outputTokens", response.usage.output_tokens);
+    modelSpan.setAttribute(
+      "cacheCreationInputTokens",
+      response.usage.cache_creation_input_tokens,
+    );
+    modelSpan.setAttribute(
+      "cacheReadInputTokens",
+      response.usage.cache_read_input_tokens,
+    );
+    modelSpan.end("ok");
 
     messages.push({ role: "assistant", content: response.content });
 
@@ -110,6 +133,10 @@ export async function investigate(
 
     const toolResults: Anthropic.ToolResultBlockParam[] = [];
     for (const call of toolUses) {
+      const toolSpan = tracer.startSpan(`tool.${call.name}`, "tool", {
+        parent: modelSpan,
+        attributes: { toolName: call.name },
+      });
       const start = Date.now();
       try {
         const result = await executeTool(
@@ -131,10 +158,8 @@ export async function investigate(
           ok: true,
           durationMs,
         });
-        onEvent({
-          type: "tool_call",
-          detail: { tool: call.name, ok: true, durationMs },
-        });
+        toolSpan.setAttribute("evidenceCount", result.evidence.length);
+        toolSpan.end("ok");
       } catch (err) {
         const durationMs = Date.now() - start;
         const message = (err as Error).message;
@@ -151,9 +176,9 @@ export async function investigate(
           durationMs,
           error: message,
         });
-        onEvent({
-          type: "tool_call",
-          detail: { tool: call.name, ok: false, durationMs, error: message },
+        toolSpan.end("error", {
+          category: categorizeError(message),
+          message: truncateErrorMessage(message),
         });
       }
     }

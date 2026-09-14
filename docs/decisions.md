@@ -461,16 +461,20 @@ that runs the tool_use/tool_result loop automatically.
 call, inspect `tool_use` blocks, dispatch each through `executeTool()`,
 catch and surface errors as `is_error` tool_results, repeat up to 8 turns.
 
-**Why.** Explicit control over tool dispatch, error handling, and an
-`onEvent` hook is needed now so that Phase 3's approval gate and Phase 4's
-observability can be inserted into a loop that's already legible, rather than
-retrofitted into a black-box helper. `toolRunner()` remains a reasonable
-choice for a purely-read-only, no-tracing throwaway script; it wasn't right
-here given where this loop is headed.
+**Why.** Explicit control over tool dispatch and error handling was needed
+so that Phase 3's approval gate and Phase 4's observability could be
+inserted into a loop that's already legible, rather than retrofitted into a
+black-box helper. `toolRunner()` remains a reasonable choice for a
+purely-read-only, no-tracing throwaway script; it wasn't right here given
+where this loop was headed. As of Phase 4, the placeholder `onEvent` hook
+this entry originally described has been replaced by real spans
+(`tracer.startSpan(...)` around each model turn and tool call, passed a
+parent `Span` from `apps/cli`) — see the "Observability" entry below.
 
-**Revisit when** `toolRunner()` (or its successor) supports the
-approval-interception and event-hook needs directly — unlikely to be worth
-switching back even then, since the current loop is ~90 lines.
+**Revisit when** `toolRunner()` (or its successor) supports approval
+interception and span-shaped tracing hooks directly — unlikely to be worth
+switching back even then, since the current loop is ~180 lines and the
+tracing is now load-bearing, not incidental.
 
 ---
 
@@ -541,3 +545,97 @@ infrastructure ahead of a concrete requirement).
 **Revisit when** reproducible fixtures are needed for the evaluation suite
 (Phase 5) — at that point a seed script also becomes useful as an eval-data
 generator, which is a concrete enough reason to write one.
+
+---
+
+## Observability: internal OTel-shaped tracer, no OTel runtime dependency (Option C)
+
+**Context.** Three options were compared before implementing Phase 4:
+(A) adopt the OpenTelemetry SDK directly; (B) log unstructured lines to
+stdout/stderr; (C) a thin internal tracer with an OTel-_shaped_ data model
+(`SpanRecord`: trace/span IDs, parent linkage, category, status, scalar
+attributes) but zero OpenTelemetry runtime dependency.
+
+**Decision.** Option C. `packages/observability` (`Tracer`, `Span`,
+`SpanRecord`, `formatTraceTree`, `serializeTraceFile`) has no dependency on
+`@opentelemetry/*`. Trace/span IDs are generated with `node:crypto
+randomBytes` at exactly W3C Trace Context / OTel widths (128-bit trace ID,
+64-bit span ID — see `ids.ts`), and parent/child linkage is explicit
+(`parent?: Span` passed at `startSpan()` call sites in `runner.ts` and
+`approval.ts`), not implicit async-context propagation.
+
+**Why.** Option A pulls in an SDK, exporter, and context-propagation
+machinery for a single-process CLI that doesn't yet export anywhere —
+premature. Option B is cheaper still but throws away structure a future
+export step would have to reconstruct from log text. Option C gets
+everything a future exporter needs (correctly-sized IDs, explicit
+parent/child, scalar-only attributes, tri-state status) with a
+dependency-free package, and the intended future path is mechanical:
+`SpanRecord → OTel mapping → OTLP / Cloudflare-compatible destination`. No
+exporter is implemented this phase.
+
+**Cloudflare framing — important correction from the initial proposal.**
+This is **not** "internal tracing because we decided not to use
+Cloudflare." The user uses Cloudflare extensively and wants to preserve
+using its dashboard for the portfolio demo. The correct framing is:
+`internal tracing model → OTel-compatible export layer → Cloudflare where
+appropriate`. Cloudflare is an adapter/exporter decision to be made later,
+never an application-level dependency of `packages/observability` or
+anything that imports it.
+
+**Trace ownership.** `apps/cli/src/index.ts` constructs the `Tracer` and the
+root `agent.run` span, and passes both into `investigate()` and
+`reviewAndExecute()` as `{ tracer, parentSpan }`. This means one trace spans
+the whole CLI lifecycle — investigation, human approval, and execution —
+not three separately-traced pieces. `investigate()` nests one `model.turn`
+span per loop iteration under the root, and one `tool.<name>` span per tool
+call under that turn's `model.turn` span. `reviewAndExecute()` adds
+`approval.decision` (wraps the `promptForApproval()` call, records
+`decision: "approved" | "rejected"`), and, only on approval,
+`action.execute` (wraps `issueWriter.createIssue()`, or ends immediately
+with `digest_mismatch` if the approval-digest check fails) and
+`action.confirm` (wraps the post-write `issueTracker.getIssue()` read-back)
+— both children of the same root span, siblings of the `model.turn` spans.
+
+**Error categorization.** `redact.ts`'s `categorizeError()` maps error
+_messages_ to `ErrorCategory` by the message-prefix conventions each
+integration already uses (`"Linear MCP tool ... failed:"` →
+`mcp_transport`; `"Linear:"`/`"GitHub:"`/`"Slack:"` → `saas_api`; digest
+mismatch text → `digest_mismatch`; `executeTool`'s own validation errors →
+`tool_validation`), not by inspecting SDK error classes — this keeps
+`packages/observability` dependency-free. `model_api` is categorized at its
+one call site in `runner.ts` (the `client.messages.create()` try/catch)
+since that's the only place that already knows it's calling Anthropic.
+There is deliberately **no** `ErrorCategory` for "prompt-injection evidence
+encountered" and no automatic detection of it — see the Phase 2 entries in
+this file on why keyword/string-matching against untrusted content was
+rejected there; the same reasoning applies here. That judgment is left to a
+human reading the trace, or to a future Phase 5 eval grader reading the
+run's `finalAnswer`.
+
+**Live validation caught a real bug, not a synthesized one.** During the
+Phase 4 live test, a `model.turn` hit `stop_reason: "max_tokens"` (the
+4096-token cap) mid-`tool_use`, truncating the `propose_linear_issue` call's
+JSON input before the `rationale` field. The resulting `tool_validation`
+error ("Tool input missing required string field \"rationale\"") was
+captured exactly as the categorizer intended — no failure needed to be
+manufactured to exercise this path. See the Phase 4 completion report for
+the recommendation this generates for Phase 5 (`MAX_TOKENS` is too low for
+turns carrying a large tool_result context).
+
+**Privacy.** `AttributeValue = string | number | boolean` (see `types.ts`)
+makes it a compile error to attach a raw object — a tool payload, a Slack
+message, an API response — as a span attribute; a caller that wants a
+snippet must explicitly truncate it first (`redact.ts`'s `truncate()`,
+`truncateErrorMessage()`, 200-char cap). `.traces/<traceId>.jsonl` (one file
+per run, gitignored) is one JSON line per span plus one `run_summary` line
+matching the `{trace, question, finalAnswer, resultMetadata}` shape — no
+raw Slack/issue text, no prompts, no tool payloads. Live-verified by
+grepping two persisted trace files for the literal injected Slack sentence,
+participant names, and secret-shaped strings (`sk-ant-`, `xoxb-`, `ghp_`,
+`github_pat_`) — zero matches in both.
+
+**Revisit when** an actual export destination (OTLP endpoint, Cloudflare)
+is chosen — at that point add the OTel SDK (or a hand-rolled OTLP/JSON
+exporter reading `SpanRecord[]` directly) as an _export-layer_ dependency,
+never inside `packages/observability`'s core types.

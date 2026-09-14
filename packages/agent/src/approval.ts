@@ -1,5 +1,11 @@
 import type { IssueTracker } from "@agency-os/integration-linear";
 import {
+  categorizeError,
+  truncateErrorMessage,
+  type Span,
+  type Tracer,
+} from "@agency-os/observability";
+import {
   computeApprovalDigest,
   type ApprovalPrompt,
   type AuditRecord,
@@ -12,6 +18,9 @@ export interface ReviewAndExecuteDeps {
   issueWriter: IssueWriter;
   /** Reused for the post-write read-back — the same read path already built and tested in Phase 1. */
   issueTracker: IssueTracker;
+  /** Same trace as investigate() — see apps/cli/src/index.ts, which owns both the tracer and the agent.run root span passed as parentSpan. */
+  tracer: Tracer;
+  parentSpan: Span;
 }
 
 /**
@@ -34,7 +43,14 @@ export async function reviewAndExecute(
     proposedAt: action.proposedAt,
   };
 
+  const approvalSpan = deps.tracer.startSpan("approval.decision", "approval", {
+    parent: deps.parentSpan,
+    attributes: { proposalId: action.id, kind: action.kind },
+  });
   const approved = await deps.promptForApproval(action);
+  approvalSpan.setAttribute("decision", approved ? "approved" : "rejected");
+  approvalSpan.end("ok");
+
   if (!approved) {
     return {
       ...base,
@@ -45,12 +61,20 @@ export async function reviewAndExecute(
 
   const decidedAt = new Date().toISOString();
 
+  const executeSpan = deps.tracer.startSpan("action.execute", "action", {
+    parent: deps.parentSpan,
+    attributes: { proposalId: action.id, kind: action.kind },
+  });
+
   // The actual "what was approved === what is executed" check: recompute
   // the digest from exactly what's about to run and refuse on any
   // mismatch. Object.freeze() (applied where the proposal is built) is
   // defense in depth, not the guarantee itself — this comparison is.
   const recomputed = computeApprovalDigest(action.kind, action.args);
   if (recomputed !== action.approvalDigest) {
+    const error =
+      "Approval digest mismatch: the action differs from what was approved. Execution refused.";
+    executeSpan.end("error", { category: "digest_mismatch", message: error });
     return {
       ...base,
       decision: "approved",
@@ -58,8 +82,7 @@ export async function reviewAndExecute(
       execution: {
         startedAt: new Date().toISOString(),
         outcome: "failure",
-        error:
-          "Approval digest mismatch: the action differs from what was approved. Execution refused.",
+        error,
       },
     };
   }
@@ -69,6 +92,11 @@ export async function reviewAndExecute(
   try {
     ({ issueId } = await deps.issueWriter.createIssue(action.args));
   } catch (err) {
+    const message = (err as Error).message;
+    executeSpan.end("error", {
+      category: categorizeError(message),
+      message: truncateErrorMessage(message),
+    });
     return {
       ...base,
       decision: "approved",
@@ -76,13 +104,21 @@ export async function reviewAndExecute(
       execution: {
         startedAt,
         outcome: "failure",
-        error: (err as Error).message,
+        error: message,
       },
     };
   }
+  executeSpan.setAttribute("issueId", issueId);
+  executeSpan.end("ok");
 
+  const confirmSpan = deps.tracer.startSpan("action.confirm", "action", {
+    parent: deps.parentSpan,
+    attributes: { issueId },
+  });
   try {
     const created = await deps.issueTracker.getIssue(issueId);
+    confirmSpan.setAttribute("identifier", created.identifier);
+    confirmSpan.end("ok");
     return {
       ...base,
       decision: "approved",
@@ -103,6 +139,11 @@ export async function reviewAndExecute(
     // read-back failed. Reporting this as outright "failure" would be a
     // false negative; reporting plain "success" would overstate what we
     // actually confirmed. Neither is honest, so it gets its own outcome.
+    const message = (err as Error).message;
+    confirmSpan.end("error", {
+      category: categorizeError(message),
+      message: truncateErrorMessage(message),
+    });
     return {
       ...base,
       decision: "approved",
@@ -110,7 +151,7 @@ export async function reviewAndExecute(
       execution: {
         startedAt,
         outcome: "executed_unconfirmed",
-        error: (err as Error).message,
+        error: message,
       },
     };
   }

@@ -1,6 +1,7 @@
 import { config } from "dotenv";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { mkdir, writeFile } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
 import {
   createLinearMcpClient,
@@ -19,6 +20,12 @@ import {
   reviewAndExecute,
   type AgentDependencies,
 } from "@agency-os/agent";
+import {
+  Tracer,
+  formatTraceTree,
+  serializeTraceFile,
+  type RunSummary,
+} from "@agency-os/observability";
 
 // Resolve the repo-root .env by file location, not cwd: pnpm --filter runs
 // this script with cwd set to apps/cli, so dotenv's default cwd-relative
@@ -124,56 +131,105 @@ async function main(): Promise<void> {
   // not inconsistency). client.close() below terminates that child process.
   const linearMcpClient = await createLinearMcpClient({ linearApiKey });
 
+  // Owns the whole CLI lifecycle's trace — investigation, approval, and
+  // execution are one coherent tree under this single root span, not three
+  // separately-traced pieces. See docs/decisions.md for the Option A/B/C
+  // observability comparison.
+  const tracer = new Tracer();
+  const rootSpan = tracer.startSpan("agent.run", "run", {
+    attributes: { question: question.slice(0, 200) },
+  });
+  let finalAnswer = "";
+  let runStatus: "ok" | "error" = "ok";
+  const resultMetadata: RunSummary["resultMetadata"] = {};
+
   try {
-    const issueTracker = new McpLinearIssueTracker(linearMcpClient);
-    const deps: AgentDependencies = {
-      issueTracker,
-      pullRequestSource: new GitHubPullRequestSource(githubToken),
-      slackMessageSource: new SlackConversationSource(slackBotToken),
-      projectRegistry: loadProjectRegistry(),
-    };
-
-    console.error(`Investigating: ${question}\n`);
-
-    const result = await investigate(question, deps, {
-      anthropicApiKey,
-      onEvent: (event) => {
-        if (event.type === "tool_call") {
-          const { tool, ok, durationMs, error } = event.detail as {
-            tool: string;
-            ok: boolean;
-            durationMs: number;
-            error?: string;
-          };
-          console.error(
-            `  [tool] ${tool} ${ok ? "ok" : "FAILED"} (${durationMs}ms)${error ? ` — ${error}` : ""}`,
-          );
-        }
-      },
-    });
-
-    console.log(`\n${result.answer}\n`);
-    console.log(`Evidence (${result.evidence.length}):`);
-    for (const item of result.evidence) {
-      console.log(
-        `  - [${item.source}] ${item.id}: ${item.summary}${item.url ? ` (${item.url})` : ""}`,
-      );
-    }
-
-    if (result.proposedAction) {
-      // reviewAndExecute is the only place in this process that touches a
-      // write-capable Linear client — constructed here, used here, never
-      // passed to anything the model's tool loop can reach.
-      const record = await reviewAndExecute(result.proposedAction, {
-        promptForApproval,
-        issueWriter: new LinearIssueWriter(linearApiKeyWrite),
+    try {
+      const issueTracker = new McpLinearIssueTracker(linearMcpClient);
+      const deps: AgentDependencies = {
         issueTracker,
+        pullRequestSource: new GitHubPullRequestSource(githubToken),
+        slackMessageSource: new SlackConversationSource(slackBotToken),
+        projectRegistry: loadProjectRegistry(),
+      };
+
+      console.error(`Investigating: ${question}\n`);
+
+      const result = await investigate(question, deps, {
+        anthropicApiKey,
+        tracer,
+        parentSpan: rootSpan,
       });
-      printAuditRecord(record);
+      finalAnswer = result.answer;
+
+      console.log(`\n${result.answer}\n`);
+      console.log(`Evidence (${result.evidence.length}):`);
+      for (const item of result.evidence) {
+        console.log(
+          `  - [${item.source}] ${item.id}: ${item.summary}${item.url ? ` (${item.url})` : ""}`,
+        );
+      }
+
+      let auditRecord: AuditRecord | undefined;
+      if (result.proposedAction) {
+        // reviewAndExecute is the only place in this process that touches a
+        // write-capable Linear client — constructed here, used here, never
+        // passed to anything the model's tool loop can reach.
+        auditRecord = await reviewAndExecute(result.proposedAction, {
+          promptForApproval,
+          issueWriter: new LinearIssueWriter(linearApiKeyWrite),
+          issueTracker,
+          tracer,
+          parentSpan: rootSpan,
+        });
+        printAuditRecord(auditRecord);
+      }
+
+      resultMetadata.evidenceCount = result.evidence.length;
+      resultMetadata.toolCallCount = result.trace.length;
+      resultMetadata.proposedAction = result.proposedAction !== undefined;
+      if (auditRecord) {
+        resultMetadata.approvalDecision = auditRecord.decision;
+        if (auditRecord.execution) {
+          resultMetadata.executionOutcome = auditRecord.execution.outcome;
+        }
+      }
+      for (const [key, value] of Object.entries(resultMetadata)) {
+        rootSpan.setAttribute(key, value);
+      }
+    } finally {
+      await linearMcpClient.close();
     }
+  } catch (err) {
+    runStatus = "error";
+    throw err;
   } finally {
-    await linearMcpClient.close();
+    rootSpan.end(runStatus);
+    console.error("\n=== Trace ===");
+    console.error(formatTraceTree(tracer.getSpans()));
+    await persistTrace(tracer, { question, finalAnswer, resultMetadata });
   }
+}
+
+/**
+ * `.traces/<traceId>.jsonl` — one file per run, gitignored. Scalar-only
+ * span attributes and this explicit {trace, question, finalAnswer,
+ * resultMetadata} summary line are the whole contract: no raw Slack/issue
+ * text, no prompts, no tool payloads. See docs/decisions.md.
+ */
+async function persistTrace(
+  tracer: Tracer,
+  summary: Omit<RunSummary, "traceId">,
+): Promise<void> {
+  const tracesDir = path.join(repoRoot, ".traces");
+  await mkdir(tracesDir, { recursive: true });
+  const filePath = path.join(tracesDir, `${tracer.traceId}.jsonl`);
+  const content = serializeTraceFile(tracer.getSpans(), {
+    traceId: tracer.traceId,
+    ...summary,
+  });
+  await writeFile(filePath, content, "utf-8");
+  console.error(`Trace written to ${path.relative(repoRoot, filePath)}`);
 }
 
 main().catch((err: unknown) => {
