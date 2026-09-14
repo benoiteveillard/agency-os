@@ -9,7 +9,7 @@
   "dependencies": {
     "@agency-os/agent": "workspace:*",
     "@agency-os/integration-github": "workspace:*",
-    "@agency-os/integration-linear": "workspace:*",
+    "@agency-os/integration-linear-mcp-client": "workspace:*",
     "@agency-os/shared": "workspace:*",
     "dotenv": "17.4.2"
   }

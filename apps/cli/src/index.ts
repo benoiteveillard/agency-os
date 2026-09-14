@@ -1,7 +1,10 @@
 import { config } from "dotenv";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { LinearIssueTracker } from "@agency-os/integration-linear";
+import {
+  createLinearMcpClient,
+  McpLinearIssueTracker,
+} from "@agency-os/integration-linear-mcp-client";
 import { GitHubPullRequestSource } from "@agency-os/integration-github";
 import { loadProjectRegistry } from "@agency-os/shared";
 import { investigate, type AgentDependencies } from "@agency-os/agent";
@@ -44,37 +47,47 @@ async function main(): Promise<void> {
   const linearApiKey = requireEnv("LINEAR_API_KEY");
   const githubToken = requireEnv("GITHUB_TOKEN");
 
-  const deps: AgentDependencies = {
-    issueTracker: new LinearIssueTracker(linearApiKey),
-    pullRequestSource: new GitHubPullRequestSource(githubToken),
-    projectRegistry: loadProjectRegistry(),
-  };
+  // Linear is reached through the custom MCP server (mcp/linear), spawned
+  // as a child process over stdio; GitHub stays in-process (see
+  // docs/decisions.md for why this is deliberate incremental adoption, not
+  // inconsistency). client.close() below terminates that child process.
+  const linearMcpClient = await createLinearMcpClient({ linearApiKey });
 
-  console.error(`Investigating: ${question}\n`);
+  try {
+    const deps: AgentDependencies = {
+      issueTracker: new McpLinearIssueTracker(linearMcpClient),
+      pullRequestSource: new GitHubPullRequestSource(githubToken),
+      projectRegistry: loadProjectRegistry(),
+    };
 
-  const result = await investigate(question, deps, {
-    anthropicApiKey,
-    onEvent: (event) => {
-      if (event.type === "tool_call") {
-        const { tool, ok, durationMs, error } = event.detail as {
-          tool: string;
-          ok: boolean;
-          durationMs: number;
-          error?: string;
-        };
-        console.error(
-          `  [tool] ${tool} ${ok ? "ok" : "FAILED"} (${durationMs}ms)${error ? ` — ${error}` : ""}`,
-        );
-      }
-    },
-  });
+    console.error(`Investigating: ${question}\n`);
 
-  console.log(`\n${result.answer}\n`);
-  console.log(`Evidence (${result.evidence.length}):`);
-  for (const item of result.evidence) {
-    console.log(
-      `  - [${item.source}] ${item.id}: ${item.summary}${item.url ? ` (${item.url})` : ""}`,
-    );
+    const result = await investigate(question, deps, {
+      anthropicApiKey,
+      onEvent: (event) => {
+        if (event.type === "tool_call") {
+          const { tool, ok, durationMs, error } = event.detail as {
+            tool: string;
+            ok: boolean;
+            durationMs: number;
+            error?: string;
+          };
+          console.error(
+            `  [tool] ${tool} ${ok ? "ok" : "FAILED"} (${durationMs}ms)${error ? ` — ${error}` : ""}`,
+          );
+        }
+      },
+    });
+
+    console.log(`\n${result.answer}\n`);
+    console.log(`Evidence (${result.evidence.length}):`);
+    for (const item of result.evidence) {
+      console.log(
+        `  - [${item.source}] ${item.id}: ${item.summary}${item.url ? ` (${item.url})` : ""}`,
+      );
+    }
+  } finally {
+    await linearMcpClient.close();
   }
 }
 

@@ -1,14 +1,14 @@
 # Architecture
 
-Status: Phase 0 + Phase 1 (first vertical slice). No UI, no writes, no observability
-infrastructure, no MCP yet — see `docs/decisions.md` for why each of those is deferred.
+Status: Phase 0 + Phase 1 + Phase 1.5. No UI, no writes, no observability
+infrastructure yet — see `docs/decisions.md` for why each of those is deferred.
 
 ## Data flow
 
 ```text
 CLI (apps/cli)
   reads ANTHROPIC_API_KEY, LINEAR_API_KEY, GITHUB_TOKEN, LINEAR_PROJECT_ID_ACME
-  builds AgentDependencies
+  spawns the Linear MCP server (stdio child process), builds AgentDependencies
       │
       ▼
 investigate() (packages/agent/src/runner.ts)
@@ -21,34 +21,62 @@ investigate() (packages/agent/src/runner.ts)
       ▼
 executeTool() (packages/agent/src/tools.ts)
   resolves a projectSlug to a ProjectRegistryEntry, then calls one of:
-    - IssueTracker.listProjectIssues(linearProjectId)
-    - PullRequestSource.listPullRequests(owner, repo)
-    - PullRequestSource.getWorkflowRunStatus(owner, repo, ref)  — GitHub Actions API, not Checks API (see docs/decisions.md)
+    - IssueTracker.listProjectIssues(linearProjectId)      — Linear, via MCP
+    - IssueTracker.getIssue(idOrIdentifier)                — Linear, via MCP (not yet an agent tool)
+    - PullRequestSource.listPullRequests(owner, repo)      — GitHub, in-process
+    - PullRequestSource.getWorkflowRunStatus(owner, repo, ref) — GitHub Actions API, in-process
   converts each result into Evidence[] (source, id, url, summary, timestamp)
       │
+      ├── Linear path ──────────────────────────────────────────────┐
+      │                                                              │
+      ▼                                                              ▼
+McpLinearIssueTracker                                    GitHubPullRequestSource
+(@agency-os/integration-linear-mcp-client)               (@agency-os/integration-github)
+  implements IssueTracker via MCP Client.callTool()         wraps @octokit/rest directly
+      │ (stdio, JSON-RPC)                                          │
+      ▼                                                             ▼
+mcp/linear/src/server.ts (child process)                  GitHub REST API
+  McpServer + registerLinearTools()
+  handlers depend on IssueTracker, injected with
+  a real LinearIssueTracker
+      │
       ▼
-LinearIssueTracker (@agency-os/integration-linear)   GitHubPullRequestSource (@agency-os/integration-github)
-  wraps @linear/sdk                                    wraps @octokit/rest
-      │                                                       │
-      ▼                                                       ▼
-Linear GraphQL API                                     GitHub REST API
+LinearIssueTracker (@agency-os/integration-linear)
+  wraps @linear/sdk
+      │
+      ▼
+Linear GraphQL API
 ```
+
+The agent never knows Linear is reached through MCP — `packages/agent`
+depends only on the `IssueTracker` interface, exactly as it did in Phase 1.
+GitHub remains in-process; see `docs/decisions.md` for why this asymmetry is
+deliberate.
 
 ## Package boundaries
 
 ```text
-packages/shared            — Evidence, ProjectRegistryEntry, InvestigationResult types
-packages/integrations/linear   — IssueTracker interface + LinearIssueTracker
-packages/integrations/github   — PullRequestSource interface + GitHubPullRequestSource
-packages/agent              — tool schemas, tool dispatch, system prompt, the loop
-apps/cli                    — env wiring + stdout/stderr presentation
+packages/shared                     — Evidence, ProjectRegistryEntry, InvestigationResult types
+packages/integrations/linear        — IssueTracker interface, LinearIssueTracker, resolveProjectIssue
+packages/integrations/linear-mcp-client — McpLinearIssueTracker (implements IssueTracker via MCP)
+packages/integrations/github        — PullRequestSource interface + GitHubPullRequestSource
+packages/agent                      — tool schemas, tool dispatch, system prompt, the loop
+mcp/linear                          — custom Linear MCP server (McpServer + tool handlers)
+apps/cli                            — env wiring, MCP client lifecycle, stdout/stderr presentation
 ```
 
-Business logic (`packages/agent`) depends on the `IssueTracker` / `PullRequestSource`
-interfaces, not on `@linear/sdk` or `@octokit/rest` response shapes directly
-(AGENTS.md #11). Each interface has exactly one implementation today — no
-generic "SaaS provider" abstraction has been introduced, since only one
-provider exists per capability (AGENTS.md #42).
+Business logic (`packages/agent`) depends on the `IssueTracker` /
+`PullRequestSource` interfaces, never on `@linear/sdk`, `@octokit/rest`, or
+`@modelcontextprotocol/sdk` response shapes directly (AGENTS.md #11).
+`IssueTracker` now has two implementations (`LinearIssueTracker`,
+`McpLinearIssueTracker`) — the first case in this repo where an interface
+has more than one — but the agent's dependency stays exactly the same
+interface import; only `apps/cli`'s dependency-construction code changed.
+
+`mcp/linear`'s tool handlers depend on `IssueTracker`, not on
+`LinearIssueTracker` directly — `server.ts` constructs the concrete
+implementation and injects it, matching the same interface-not-implementation
+rule the agent itself follows.
 
 ## Project registry
 
@@ -69,27 +97,47 @@ One primary agent, no sub-agents (README §11, AGENTS.md §20). The tool-use
 loop in `packages/agent/src/runner.ts` is hand-rolled rather than using the
 Anthropic SDK's beta `toolRunner()` helper, so that tool dispatch, error
 surfacing, and an event hook (`onEvent`) are explicit and are the natural
-place to add human-approval gating once write tools exist (Phase 3).
+place to add human-approval gating once write tools exist (Phase 3). Moving
+Linear behind MCP (Phase 1.5) deliberately did not touch this file at all —
+the loop only ever talks to `executeTool()`, which only ever talks to
+`IssueTracker`/`PullRequestSource` interfaces.
 
 Every tool call is wrapped in try/catch: a failure becomes an `is_error`
 tool_result so Claude sees it and can say "I couldn't retrieve X" instead of
 guessing, and is also recorded in a `ToolCallRecord` trace (tool name, input,
-ok/error, duration). The `onEvent` hook and `ToolCallRecord[]` exist so a
-later observability layer (Phase 4) can be wired in without changing the
-loop's control flow.
+ok/error, duration). This holds whether the failure originated in-process
+(GitHub) or came back as an MCP `isError` result translated into a thrown
+`Error` by `McpLinearIssueTracker` (Linear) — the agent can't tell the
+difference, by design.
 
 ## Read/write boundary
 
 Everything implemented so far is read-only (`IssueTracker.listProjectIssues`,
-`PullRequestSource.listPullRequests`, `PullRequestSource.getWorkflowRunStatus`).
-There is no approval-gating code yet because there is nothing to gate —
-AGENTS.md #14/#15's approval architecture becomes real infrastructure (not
-just a prompt instruction) starting in Phase 3, at which point the hand-rolled
-loop chosen here is where that gate gets inserted.
+`IssueTracker.getIssue`, `PullRequestSource.listPullRequests`,
+`PullRequestSource.getWorkflowRunStatus`). There is no approval-gating code
+yet because there is nothing to gate — AGENTS.md #14/#15's approval
+architecture becomes real infrastructure (not just a prompt instruction)
+starting in Phase 3, at which point the hand-rolled loop chosen here is
+where that gate gets inserted.
 
 ## MCP
 
-Not used yet. Both integrations are called as plain TypeScript classes.
-README §8 requires at least one custom MCP server somewhere in the project;
-the plan is a Phase 1.5 MCP server wrapping `LinearIssueTracker` once the
-read-only flow here is proven — see `docs/decisions.md`.
+`mcp/linear` is the project's first custom MCP server (README §8), and as of
+Phase 1.5 it is the real execution path for Linear calls in the running
+product — not a demo-only add-on. It exposes two business-shaped tools,
+`linear_list_project_issues` and `linear_get_issue`, both returning
+structured Linear domain data (JSON) rather than a summarized answer; the
+agent's `executeTool()` remains solely responsible for turning that domain
+data into `Evidence[]`.
+
+Transport is stdio only: `apps/cli` spawns the server as a child process via
+`StdioClientTransport` (see `packages/integrations/linear-mcp-client/src/create-client.ts`)
+and passes `LINEAR_API_KEY` through an explicit `env` override — the
+transport's default spawned environment is a fixed safe allowlist (PATH,
+HOME, etc.) that does **not** inherit arbitrary parent env vars, so
+injecting the key explicitly is the actual authentication boundary, not an
+assumption. No remote hosting, no OAuth, no HTTP/SSE transport yet.
+
+GitHub stays in-process — see `docs/decisions.md` for why moving one
+integration behind MCP while leaving the other direct is deliberate
+incremental adoption, not inconsistency.

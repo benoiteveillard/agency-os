@@ -135,6 +135,73 @@ than GitHub's flatter PR/check-run data.
 **Revisit when** the Phase 1.5 milestone starts, or if a second consumer of
 either integration appears sooner (e.g. Claude Desktop).
 
+**Resolved (2026-09-14).** Phase 1.5 implemented the Linear MCP server and,
+per an explicit decision to make it the _real_ execution path rather than a
+demo-only add-on, went further than originally planned here: `apps/cli` now
+reaches Linear exclusively through it. See the next entry for why.
+
+---
+
+## Linear moved behind the custom MCP server; GitHub stays direct
+
+**Context.** Phase 1.5 built `mcp/linear`, a custom MCP server wrapping
+Linear reads (previous entry). The question was whether to make it a
+demo-only artifact alongside the still-direct `LinearIssueTracker` calls, or
+the actual execution path the running agent uses.
+
+**Decision.** Linear now goes through MCP for real:
+
+```text
+Agent → IssueTracker (interface, unchanged)
+      → McpLinearIssueTracker (packages/integrations/linear-mcp-client)
+      → MCP Client.callTool() over stdio
+      → mcp/linear/src/server.ts (child process)
+      → IssueTracker → LinearIssueTracker → Linear API
+```
+
+GitHub deliberately stays exactly as it was: `GitHubPullRequestSource`
+called in-process from `packages/agent`, no MCP involved.
+
+**Why this asymmetry, and why now.** The reason is deliberate incremental
+adoption of a new architectural boundary, not an oversight or
+inconsistency: proving MCP as a real production path is worth doing on
+_one_ capability first — where a regression is contained and cheap to
+diagnose — before deciding whether to standardize it across every
+integration. GitHub was left alone specifically so there would be a
+same-session, same-questions comparison point: if something broke or
+degraded, "did the MCP move cause it?" has an immediate answer, because
+GitHub's behavior is the control. Converting both integrations at once
+would have made that comparison impossible and doubled the blast radius of
+a boundary that had not yet been validated with real traffic.
+
+**What stayed true to the interface boundary already in place.** This
+migration only worked as cleanly as it did because `packages/agent` already
+depended on `IssueTracker` (AGENTS.md #11) rather than on
+`LinearIssueTracker` — the interface designed in Phase 1 for "business logic
+shouldn't depend on provider SDKs" turned out to be exactly the seam needed
+for "business logic shouldn't depend on transport, either." `runner.ts` and
+`tools.ts` required zero changes; the only agent-side change was in
+`apps/cli`'s dependency construction (which `IssueTracker` implementation to
+build).
+
+**Cost discovered in practice.** The MCP boundary is not free. A cold spawn
+of the server (first run after code changes, before tsx's transform cache is
+warm) took ~28s for a single `linear_list_project_issues` call that
+completes in under a second in-process; a warm-cache spawn dropped to
+~300ms handshake + ~1s for the same call — roughly in line with Phase 1's
+direct-call latency, but only once warm. This is a real, measured
+production cost of choosing stdio + on-the-fly TypeScript transpilation for
+local dev, not a one-time fluke — see `docs/decisions.md`'s "Monorepo" entry
+for the no-build-step choice this depends on, and revisit it if the MCP
+server ever needs cold-start latency guarantees.
+
+**Revisit when** either (a) evaluation data (Phase 5) shows the MCP boundary
+measurably helps or hurts answer quality/reliability, giving a real basis to
+decide whether GitHub should move too, or (b) the cold-start cost above
+becomes a real problem — at which point precompiling `mcp/linear` to plain
+JS (removing the tsx transpilation step from the spawn path) is the fix, not
+abandoning MCP.
+
 ---
 
 ## Hand-rolled Anthropic tool-use loop, not the beta `toolRunner()` helper

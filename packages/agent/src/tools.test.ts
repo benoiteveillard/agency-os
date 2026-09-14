@@ -45,6 +45,7 @@ function makeDeps(
 ): AgentDependencies {
   const issueTracker: IssueTracker = {
     listProjectIssues: async () => fakeProjectIssues,
+    getIssue: async () => fakeProjectIssues.issues[0]!,
   };
   const pullRequestSource: PullRequestSource = {
     listPullRequests: async (): Promise<PullRequestSummary[]> => [
