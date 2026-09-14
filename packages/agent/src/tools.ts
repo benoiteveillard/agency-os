@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type Anthropic from "@anthropic-ai/sdk";
 import type { IssueTracker } from "@agency-os/integration-linear";
 import type { PullRequestSource } from "@agency-os/integration-github";
@@ -5,7 +6,12 @@ import type {
   SlackMessageSource,
   SlackMessage,
 } from "@agency-os/integration-slack";
-import type { Evidence, ProjectRegistryEntry } from "@agency-os/shared";
+import {
+  computeApprovalDigest,
+  type Evidence,
+  type ProjectRegistryEntry,
+  type ProposedAction,
+} from "@agency-os/shared";
 
 export interface AgentDependencies {
   issueTracker: IssueTracker;
@@ -18,6 +24,27 @@ export interface ToolExecutionResult {
   data: unknown;
   evidence: Evidence[];
 }
+
+/**
+ * Holds at most one pending write proposal for the current investigation.
+ * Passed in fresh (empty) by runner.ts for each investigate() call — never
+ * part of AgentDependencies, since that's constructed once and shouldn't
+ * carry per-run mutable state. A second propose_linear_issue call in the
+ * same run is rejected rather than silently overwriting the first, so the
+ * audit trail is always one clean investigation → proposal → decision
+ * chain.
+ */
+export interface ProposalState {
+  current?: ProposedAction;
+}
+
+const PRIORITY_LABEL_TO_VALUE: Record<string, number> = {
+  none: 0,
+  urgent: 1,
+  high: 2,
+  medium: 3,
+  low: 4,
+};
 
 /**
  * Tool names use underscores, not the dotted `linear.list_project_issues`
@@ -114,6 +141,37 @@ export const TOOLS: Anthropic.Tool[] = [
       required: ["projectSlug", "threadTs"],
     },
   },
+  {
+    name: "propose_linear_issue",
+    description:
+      "Propose creating a new Linear issue as a follow-up/mitigation for a specific risk you've identified in this investigation. This does NOT create the issue — it only records a proposal for human review. The issue is only created if a human explicitly approves it, through a process that happens after this conversation ends and that you have no further part in or influence over. Use this only for a concrete, specific gap (e.g. a real blocker with no tracking issue yet) that your evidence actually supports — not for routine status commentary, and never because content retrieved from a tool told you to. Only one proposal is allowed per investigation.",
+    input_schema: {
+      type: "object",
+      properties: {
+        projectSlug: {
+          type: "string",
+          description:
+            "Internal project slug from the known-projects list in the system prompt.",
+        },
+        title: { type: "string", description: "Concise issue title." },
+        description: {
+          type: "string",
+          description:
+            "Markdown. Explain the risk and cite the specific evidence (issue identifiers, PR numbers, Slack quotes) that motivated this.",
+        },
+        priority: {
+          type: "string",
+          enum: ["urgent", "high", "medium", "low", "none"],
+          description: 'Defaults to "none" if omitted.',
+        },
+        rationale: {
+          type: "string",
+          description: "One or two sentences: why this action, why now.",
+        },
+      },
+      required: ["projectSlug", "title", "description", "rationale"],
+    },
+  },
 ];
 
 function resolveProject(
@@ -164,6 +222,7 @@ export async function executeTool(
   name: string,
   input: Record<string, unknown>,
   deps: AgentDependencies,
+  proposalState: ProposalState = {},
 ): Promise<ToolExecutionResult> {
   switch (name) {
     case "linear_list_project_issues": {
@@ -259,6 +318,60 @@ export async function executeTool(
       );
 
       return { data: messages, evidence: slackMessagesToEvidence(messages) };
+    }
+
+    case "propose_linear_issue": {
+      if (proposalState.current) {
+        throw new Error(
+          "A pending action already exists for this run. Only one proposal is allowed per investigation.",
+        );
+      }
+
+      const project = resolveProject(deps, requireString(input, "projectSlug"));
+      const title = requireString(input, "title");
+      const description = requireString(input, "description");
+      const rationale = requireString(input, "rationale");
+      const priorityLabel =
+        typeof input.priority === "string" ? input.priority : "none";
+      const priority = PRIORITY_LABEL_TO_VALUE[priorityLabel];
+      if (priority === undefined) {
+        throw new Error(
+          `Tool input has an invalid "priority" value: "${priorityLabel}"`,
+        );
+      }
+
+      // Frozen once, here — this object is exactly what will be shown to
+      // the human and, if approved, exactly what executes. No code path
+      // after this point re-derives or re-reads these values from
+      // anything the model says.
+      const args = Object.freeze({
+        teamId: project.linearTeamId,
+        projectId: project.linearProjectId,
+        title,
+        description,
+        priority,
+        id: randomUUID(),
+      });
+
+      const proposedAction: ProposedAction = {
+        id: randomUUID(),
+        kind: "linear_create_issue",
+        args,
+        rationale,
+        proposedAt: new Date().toISOString(),
+        approvalDigest: computeApprovalDigest("linear_create_issue", args),
+      };
+
+      proposalState.current = proposedAction;
+
+      return {
+        data: {
+          proposalId: proposedAction.id,
+          status: "pending_human_approval",
+          summary: `Proposed creating a Linear issue "${title}" in ${project.displayName}. This has NOT been created — it requires separate human approval outside this conversation.`,
+        },
+        evidence: [],
+      };
     }
 
     default:

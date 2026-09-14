@@ -4,7 +4,12 @@ import type {
   InvestigationResult,
   ToolCallRecord,
 } from "@agency-os/shared";
-import { TOOLS, executeTool, type AgentDependencies } from "./tools.js";
+import {
+  TOOLS,
+  executeTool,
+  type AgentDependencies,
+  type ProposalState,
+} from "./tools.js";
 import { buildSystemPrompt } from "./prompts.js";
 
 const DEFAULT_MODEL = "claude-sonnet-5";
@@ -65,6 +70,9 @@ export async function investigate(
   ];
   const evidence: Evidence[] = [];
   const trace: ToolCallRecord[] = [];
+  // Fresh per investigate() call — never part of AgentDependencies, which
+  // is constructed once and shouldn't carry per-run mutable state.
+  const proposalState: ProposalState = {};
 
   for (let turn = 0; turn < MAX_TOOL_TURNS; turn++) {
     const response = await client.messages.create({
@@ -92,7 +100,12 @@ export async function investigate(
         .map((block) => block.text)
         .join("\n")
         .trim();
-      return { answer, evidence: dedupeEvidence(evidence), trace };
+      return {
+        answer,
+        evidence: dedupeEvidence(evidence),
+        trace,
+        proposedAction: proposalState.current,
+      };
     }
 
     const toolResults: Anthropic.ToolResultBlockParam[] = [];
@@ -103,6 +116,7 @@ export async function investigate(
           call.name,
           call.input as Record<string, unknown>,
           deps,
+          proposalState,
         );
         const durationMs = Date.now() - start;
         evidence.push(...result.evidence);

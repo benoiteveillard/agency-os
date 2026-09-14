@@ -1,8 +1,9 @@
 # Architecture
 
-Status: Phase 0 + Phase 1 + Phase 1.5 + Phase 2. No UI, no writes, no
-observability infrastructure yet — see `docs/decisions.md` for why each of
-those is deferred.
+Status: Phase 0 + Phase 1 + Phase 1.5 + Phase 2 + Phase 3. No UI, no
+observability infrastructure yet — see `docs/decisions.md` for why each is
+deferred. Phase 3 adds the first write capability (one Linear issue
+creation, human-approved) — see "Write capability" below.
 
 ## Data flow
 
@@ -63,14 +64,15 @@ standardized upfront.
 ## Package boundaries
 
 ```text
-packages/shared                     — Evidence, ProjectRegistryEntry, InvestigationResult types
+packages/shared                     — Evidence, ProjectRegistryEntry, InvestigationResult, approval types + computeApprovalDigest
 packages/integrations/linear        — IssueTracker interface, LinearIssueTracker, resolveProjectIssue
 packages/integrations/linear-mcp-client — McpLinearIssueTracker (implements IssueTracker via MCP)
+packages/integrations/linear-writer — LinearIssueWriter (the ONLY write-capable Linear client) — NOT a packages/agent dependency
 packages/integrations/github        — PullRequestSource interface + GitHubPullRequestSource
 packages/integrations/slack         — SlackMessageSource interface + SlackConversationSource
-packages/agent                      — tool schemas, tool dispatch, system prompt, the loop
+packages/agent                      — tool schemas, tool dispatch, system prompt, the loop, propose_linear_issue, reviewAndExecute
 mcp/linear                          — custom Linear MCP server (McpServer + tool handlers)
-apps/cli                            — env wiring, MCP client lifecycle, stdout/stderr presentation
+apps/cli                            — env wiring, MCP client lifecycle, readline approval prompt, audit output
 ```
 
 Business logic (`packages/agent`) depends on the `IssueTracker` /
@@ -121,14 +123,14 @@ difference, by design.
 
 ## Read/write boundary
 
-Everything implemented so far is read-only (`IssueTracker.listProjectIssues`,
-`IssueTracker.getIssue`, `PullRequestSource.listPullRequests`,
-`PullRequestSource.getWorkflowRunStatus`, `SlackMessageSource.getChannelMessages`,
-`SlackMessageSource.getThread`). There is no approval-gating code yet
-because there is nothing to gate — AGENTS.md #14/#15's approval architecture
-becomes real infrastructure (not just a prompt instruction) starting in
-Phase 3, at which point the hand-rolled loop chosen here is where that gate
-gets inserted.
+Read tools (`IssueTracker.listProjectIssues`, `IssueTracker.getIssue`,
+`PullRequestSource.listPullRequests`, `PullRequestSource.getWorkflowRunStatus`,
+`SlackMessageSource.getChannelMessages`, `SlackMessageSource.getThread`) run
+autonomously — the model calls them directly via `executeTool()`. The one
+write capability (Phase 3, below) is the opposite: the model cannot call it
+directly at all, only propose it, and AGENTS.md #14/#15's approval
+architecture is now real application-level infrastructure
+(`packages/agent/src/approval.ts`), not a prompt instruction.
 
 ## Evidence sources and authority
 
@@ -229,3 +231,69 @@ blockers, the same unconfirmed-approval reasoning — as every run without
 that message present. See `docs/decisions.md` for the full result. This is
 one successful run, not a guarantee; it belongs in the Phase 5 eval suite
 as a regression case, not treated as permanently proven.
+
+## Write capability (Phase 3)
+
+The model can propose creating one Linear issue; it cannot create one. The
+tool it calls, `propose_linear_issue`, performs zero external I/O — it only
+validates input, resolves `projectSlug → {linearTeamId, linearProjectId}`,
+freezes the resulting args (`Object.freeze`), and computes a SHA-256
+`approvalDigest` over `{kind, args}` (`computeApprovalDigest`,
+`packages/shared/src/approval.ts`). That frozen `ProposedAction` is
+returned on `InvestigationResult`, not executed.
+
+```text
+apps/cli, after investigate() returns and the model's turn has ended:
+  if result.proposedAction exists:
+    print the exact frozen action
+    prompt a human (node:readline/promises) — never the model
+    reviewAndExecute(action, { promptForApproval, issueWriter, issueTracker })
+      (packages/agent/src/approval.ts — the ONLY function that can call
+       IssueWriter.createIssue)
+        rejected  → AuditRecord, no write attempted
+        approved  → recompute the digest; refuse execution on any mismatch
+                  → IssueWriter.createIssue(action.args)   [LinearIssueWriter,
+                     packages/integrations/linear-writer, write-scoped key]
+                  → issueTracker.getIssue(issueId)          [existing Phase 1
+                     read path, same MCP-backed tracker used for reads]
+                  → AuditRecord with the read-back-confirmed created issue
+```
+
+**The safety property is structural, not a runtime check alone.**
+`packages/agent/package.json` does not depend on
+`@agency-os/integration-linear-writer` — verified both by reading the
+dependency list and by checking the actual pnpm symlinks after install
+(`packages/agent/node_modules/@agency-os/` has no `integration-linear-writer`
+entry), and enforced going forward by
+`packages/agent/src/dependency-boundary.test.ts`, which fails CI if that
+dependency is ever added. There is no `execute_*` tool in the model's
+schema at all — see `docs/decisions.md` for why this was chosen over a
+`prepare_*`/`execute_*` tool pair.
+
+**What "approved === executed" actually means.** `Object.freeze()` on the
+proposal's args is defense in depth, not the guarantee — the guarantee is
+`reviewAndExecute` recomputing `computeApprovalDigest(action.kind, action.args)`
+immediately before the write and refusing (reporting `execution.outcome:
+"failure"`, not crashing) if it doesn't match `action.approvalDigest`.
+Since there is no tool call available to the model after its turn ends,
+there is no code path by which the args could legitimately differ at
+execution time from what was frozen at proposal time — the digest check
+exists to make that an explicit, verified invariant rather than an
+assumption resting on nothing having gone wrong.
+
+**Idempotency, stated at the actual confidence level guaranteed:**
+double-executing the same `AuditRecord` within one process run is
+prevented (in-memory, certain). A client-supplied UUID is passed as
+Linear's `IssueCreateInput.id`, which _might_ give Linear-side dedup on a
+literal retried call — this is **experimental and unconfirmed**; Linear's
+docs don't document the behavior either way, so it is not relied on as a
+guarantee. Idempotency **across separate CLI process runs is not
+solved** — each run is a fresh investigation and a fresh proposal; that's a
+named limitation, not an oversight (no database in this phase — see
+`docs/decisions.md`).
+
+**Read/write credential separation:** `LINEAR_API_KEY` (read-only,
+Phase 1) is used by the MCP server and by the read-back after a write.
+`LINEAR_API_KEY_WRITE` (a separate key, "Create issues" scope — narrower
+than "Write" — restricted to one team) is used exclusively inside
+`reviewAndExecute`/`LinearIssueWriter`, constructed only in `apps/cli`.

@@ -10,6 +10,8 @@
 export interface ProjectRegistryEntry {
   displayName: string;
   linearProjectId: string;
+  /** Required for Linear issue creation (IssueCreateInput.teamId) — a project can span teams, so this isn't derivable from linearProjectId alone. */
+  linearTeamId: string;
   githubOwner: string;
   githubRepo: string;
   slackChannelId: string;
@@ -35,6 +37,7 @@ export function loadProjectRegistry(): Record<string, ProjectRegistryEntry> {
     "acme-website-migration": {
       displayName: "Acme Website Migration",
       linearProjectId: requireEnv("LINEAR_PROJECT_ID_ACME"),
+      linearTeamId: requireEnv("LINEAR_TEAM_ID_ACME"),
       githubOwner: "os-agency-fake",
       githubRepo: "acme-website-migration",
       slackChannelId: requireEnv("SLACK_CHANNEL_ID_ACME"),

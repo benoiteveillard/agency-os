@@ -1,5 +1,102 @@
 # Architectural decisions
 
+## Phase 3 write approval: application-side state machine (Option A), no execute tool
+
+**Context.** Phase 3 adds the first write capability — creating one Linear
+issue — and needed an approval architecture enforced in application logic,
+not a system-prompt instruction (AGENTS.md #15). Two designs were compared
+explicitly before choosing, per the constraint not to assume either was
+correct.
+
+**Option B (`prepare_*`/`execute_*` tool pair, both model-callable).** The
+model calls `prepare`, gets a token, later calls `execute(token)`; the
+execute handler validates the token before writing. This does put the
+enforcement in application logic — but the safety property depends on that
+runtime check being present, correct, and never weakened by a future edit.
+The model's schema contains a real, callable execute capability; the trust
+boundary is a runtime `if`.
+
+**Option A (chosen): no execute tool exists in the model's schema at all.**
+The model gets exactly one tool, `propose_linear_issue`, whose handler
+performs zero external I/O — it only validates and freezes arguments. There
+is no `execute_*` tool anywhere for the model to call, correctly or
+adversarially. Approval and execution (`packages/agent/src/approval.ts`,
+`reviewAndExecute`) happen entirely in application code, invoked by
+`apps/cli` _after_ the model's conversational turn has already ended — by
+which point there is no further tool call available to it, full stop. The
+guarantee is the absence of a capability, not vigilance about a check.
+
+**Why A over B, concretely:** the write-capable client
+(`LinearIssueWriter`, `packages/integrations/linear-writer`) is not just
+gated behind a token check — it is **structurally absent** from
+`packages/agent`'s dependency graph. Confirmed two ways: `packages/agent/package.json`
+does not list `@agency-os/integration-linear-writer`, and after `pnpm install`,
+`packages/agent/node_modules/@agency-os/` has no such entry — checked
+directly, not inferred. `packages/agent/src/dependency-boundary.test.ts`
+makes this CI-enforced: if a future change ever adds that dependency, the
+test fails immediately, regardless of whether anything calls it yet.
+
+**Binding approval to an exact payload — not `Object.freeze()` alone.**
+`Object.freeze()` on the proposal's args is defense in depth. The actual
+invariant — "what was approved === what is executed" — is enforced by
+`computeApprovalDigest(kind, args)` (`packages/shared/src/approval.ts`): a
+SHA-256 hex digest over hand-rolled canonical JSON (sorted keys, no
+whitespace — deliberately not a library, since the payload is always a
+small plain object of strings/numbers). The digest is computed once when
+the proposal is frozen and stored as `ProposedAction.approvalDigest`;
+`reviewAndExecute` recomputes it from `action.args` immediately before
+calling `IssueWriter.createIssue` and refuses execution
+(`execution.outcome: "failure"`, not a crash) on any mismatch. Tested
+directly: constructing a `ProposedAction` whose `args` were changed after
+its digest was computed (`packages/agent/src/approval.test.ts`) confirms
+`issueWriter.createIssue` is never called.
+
+**No silent proposal overwrite.** A second `propose_linear_issue` call
+within one investigation is rejected — `"A pending action already exists
+for this run."` — rather than silently replacing the first. Kept as a
+per-run `ProposalState` object passed explicitly into `executeTool` (not
+part of `AgentDependencies`, which is constructed once and shouldn't carry
+per-run mutable state), so the audit trail is always exactly one
+investigation → proposal → decision chain.
+
+**Idempotency, stated at the confidence level actually guaranteed — not
+overstated.** Double-executing the same `AuditRecord` within one process
+run is prevented (certain, in-process). Linear's client-supplied
+`IssueCreateInput.id` is passed through as an **experiment**, not a
+guarantee — Linear's docs don't confirm whether reusing an id dedupes,
+rejects, or is silently ignored, so this is not relied on. Upgrade this
+claim only once empirically verified. Idempotency across separate CLI
+process runs is explicitly **not solved** — each run is a fresh
+investigation; solving that needs persistence, which is out of scope
+without a concrete reason (no DB in this phase).
+
+**Least-privilege scope, verified against Linear's docs, not assumed.**
+Personal API keys support a **"Create issues"** scope — confirmed via
+Linear's official docs as a standalone option narrower than "Write" — and
+can be further restricted to a specific team. `LINEAR_API_KEY_WRITE` uses
+this scope, restricted to the Acme project's one team (JUS); it is a wholly
+separate credential from the read-only `LINEAR_API_KEY`, constructed only
+inside `apps/cli`, never passed to `packages/agent` or the MCP subprocess.
+
+**`LINEAR_TEAM_ID_ACME` resolved from real data, not guessed:**
+`project.teams()` (via the existing read-only key) confirmed exactly one
+team owns the Acme project (`JUS` / "Justa") before this value was written
+to `.env` — see the failures.md entry for a data-entry bug this surfaced.
+
+**Live-verified (2026-09-14):**
+
+- **Approval path** — `pnpm ask "Assess Project Acme and propose the most useful immediate mitigation action."`, approved → **JUS-60** created ("Escalate overdue client checkout approval (JUS-6) — blocking launch JUS-24"), read back via the existing MCP-backed read path, full audit trail printed (proposed → approved → executed → confirmed).
+- **Rejection path** — same question, rejected → `AuditRecord` shows `decision: "rejected"`, `execution: undefined`; Linear issue count externally verified unchanged (21 before and after, via a raw read-only-key check independent of the CLI's own claims).
+- **Digest mismatch, write failure, read-back failure, double-execution** — verified via `packages/agent/src/approval.test.ts`, not live (no live path naturally exercises deliberate fault injection without breaking something on purpose, which wasn't warranted here).
+
+**Revisit when** a second write capability is added — that's the point to
+generalize `ProposedAction`/`AuditRecord` from a single concrete shape into
+a discriminated union (AGENTS.md #42 — not before), and to reconsider
+whether Option A's "no execute tool" pattern should become a project-wide
+convention documented here rather than a one-off choice.
+
+---
+
 ## Slack: direct `@slack/web-api` integration, not MCP; no eager user resolution
 
 **Context.** Phase 2 adds Slack as a third evidence source. Slack ships an

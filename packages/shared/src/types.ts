@@ -1,3 +1,5 @@
+import type { ProposedAction } from "./approval.js";
+
 /**
  * A single retrieved fact backing part of the agent's answer.
  * Every important claim in a final answer should trace back to at least one of these.
@@ -24,4 +26,6 @@ export interface InvestigationResult {
   answer: string;
   evidence: Evidence[];
   trace: ToolCallRecord[];
+  /** Set only if the model proposed a write action this run — see packages/shared/src/approval.ts. */
+  proposedAction?: ProposedAction;
 }

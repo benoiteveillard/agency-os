@@ -47,6 +47,9 @@ importers:
       '@agency-os/integration-linear-mcp-client':
         specifier: workspace:*
         version: link:../../packages/integrations/linear-mcp-client
+      '@agency-os/integration-linear-writer':
+        specifier: workspace:*
+        version: link:../../packages/integrations/linear-writer
       '@agency-os/integration-slack':
         specifier: workspace:*
         version: link:../../packages/integrations/slack
@@ -111,6 +114,15 @@ importers:
       '@agency-os/mcp-linear':
         specifier: workspace:*
         version: link:../../../mcp/linear
+
+  packages/integrations/linear-writer:
+    dependencies:
+      '@agency-os/shared':
+        specifier: workspace:*
+        version: link:../../shared
+      '@linear/sdk':
+        specifier: 95.0.0
+        version: 95.0.0(graphql@17.0.2)
 
   packages/integrations/slack:
     dependencies:

@@ -12,7 +12,11 @@ import type {
   SlackMessageSource,
   SlackMessage,
 } from "@agency-os/integration-slack";
-import { executeTool, type AgentDependencies } from "./tools.js";
+import {
+  executeTool,
+  type AgentDependencies,
+  type ProposalState,
+} from "./tools.js";
 
 const fakeProjectIssues: ProjectIssuesResult = {
   project: {
@@ -110,6 +114,7 @@ function makeDeps(
       "acme-website-migration": {
         displayName: "Acme Website Migration",
         linearProjectId: "proj_1",
+        linearTeamId: "team_1",
         githubOwner: "os-agency-fake",
         githubRepo: "acme-website-migration",
         slackChannelId: "C123",
@@ -232,6 +237,107 @@ describe("executeTool", () => {
         makeDeps(),
       ),
     ).rejects.toThrow(/missing required string field "threadTs"/);
+  });
+
+  it("freezes a proposal with a matching approval digest and does not touch Linear", async () => {
+    const proposalState: ProposalState = {};
+
+    const result = await executeTool(
+      "propose_linear_issue",
+      {
+        projectSlug: "acme-website-migration",
+        title: "Restore production deployment credentials",
+        description: "Blocks JUS-18, which blocks JUS-24 (see evidence).",
+        priority: "urgent",
+        rationale: "No tracking issue exists yet for this blocker.",
+      },
+      makeDeps(),
+      proposalState,
+    );
+
+    expect(proposalState.current).toBeDefined();
+    const action = proposalState.current!;
+    expect(action.kind).toBe("linear_create_issue");
+    expect(action.args).toMatchObject({
+      teamId: "team_1",
+      projectId: "proj_1",
+      title: "Restore production deployment credentials",
+      priority: 1, // "urgent" -> Linear's 1
+    });
+    expect(Object.isFrozen(action.args)).toBe(true);
+    expect(result.evidence).toEqual([]);
+    expect((result.data as { status: string }).status).toBe(
+      "pending_human_approval",
+    );
+  });
+
+  it("defaults priority to none when omitted", async () => {
+    const proposalState: ProposalState = {};
+
+    await executeTool(
+      "propose_linear_issue",
+      {
+        projectSlug: "acme-website-migration",
+        title: "Follow-up",
+        description: "...",
+        rationale: "...",
+      },
+      makeDeps(),
+      proposalState,
+    );
+
+    expect(proposalState.current?.args.priority).toBe(0);
+  });
+
+  it("rejects a second proposal in the same run instead of silently overwriting the first", async () => {
+    const proposalState: ProposalState = {};
+    const deps = makeDeps();
+
+    await executeTool(
+      "propose_linear_issue",
+      {
+        projectSlug: "acme-website-migration",
+        title: "First proposal",
+        description: "...",
+        rationale: "...",
+      },
+      deps,
+      proposalState,
+    );
+
+    await expect(
+      executeTool(
+        "propose_linear_issue",
+        {
+          projectSlug: "acme-website-migration",
+          title: "Second proposal",
+          description: "...",
+          rationale: "...",
+        },
+        deps,
+        proposalState,
+      ),
+    ).rejects.toThrow(/A pending action already exists for this run/);
+
+    // The first proposal must still be the one on record, untouched.
+    expect(proposalState.current?.args.title).toBe("First proposal");
+  });
+
+  it("rejects an invalid priority value", async () => {
+    await expect(
+      executeTool(
+        "propose_linear_issue",
+        {
+          projectSlug: "acme-website-migration",
+          title: "x",
+          description: "x",
+          rationale: "x",
+          priority: "critical", // not one of the allowed enum values
+        },
+        makeDeps(),
+        {},
+      ),
+    ).rejects.toThrow(/invalid "priority" value/);
   });
 
   it("rejects an unknown project slug instead of guessing", async () => {
