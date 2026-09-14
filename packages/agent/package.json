@@ -10,6 +10,7 @@
   "dependencies": {
     "@agency-os/integration-github": "workspace:*",
     "@agency-os/integration-linear": "workspace:*",
+    "@agency-os/integration-slack": "workspace:*",
     "@agency-os/shared": "workspace:*",
     "@anthropic-ai/sdk": "0.125.0"
   }

@@ -1,0 +1,13 @@
+{
+  "name": "@agency-os/integration-slack",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "types": "./src/index.ts",
+  "dependencies": {
+    "@slack/web-api": "8.1.1"
+  }
+}

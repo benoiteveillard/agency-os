@@ -19,6 +19,25 @@ export interface RunnerEvent {
 
 export type RunnerEventHandler = (event: RunnerEvent) => void;
 
+/**
+ * The same piece of evidence can legitimately be returned by two different
+ * tool calls — e.g. a Slack thread's root message comes back from both
+ * slack_get_channel_messages and slack_get_thread — since each tool call is
+ * correct in isolation. Dedupes the accumulated list by (source, id) before
+ * it's returned, keeping the first occurrence. Applied once, here, rather
+ * than in each tool's evidence-building code, since it's a property of
+ * accumulating evidence across calls, not of any one source.
+ */
+export function dedupeEvidence(evidence: Evidence[]): Evidence[] {
+  const seen = new Set<string>();
+  return evidence.filter((item) => {
+    const key = `${item.source}:${item.id}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 export interface InvestigateOptions {
   anthropicApiKey: string;
   model?: string;
@@ -73,7 +92,7 @@ export async function investigate(
         .map((block) => block.text)
         .join("\n")
         .trim();
-      return { answer, evidence, trace };
+      return { answer, evidence: dedupeEvidence(evidence), trace };
     }
 
     const toolResults: Anthropic.ToolResultBlockParam[] = [];

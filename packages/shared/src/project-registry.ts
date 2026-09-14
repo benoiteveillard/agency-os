@@ -12,6 +12,7 @@ export interface ProjectRegistryEntry {
   linearProjectId: string;
   githubOwner: string;
   githubRepo: string;
+  slackChannelId: string;
 }
 
 function requireEnv(name: string): string {
@@ -36,6 +37,7 @@ export function loadProjectRegistry(): Record<string, ProjectRegistryEntry> {
       linearProjectId: requireEnv("LINEAR_PROJECT_ID_ACME"),
       githubOwner: "os-agency-fake",
       githubRepo: "acme-website-migration",
+      slackChannelId: requireEnv("SLACK_CHANNEL_ID_ACME"),
     },
   };
 }

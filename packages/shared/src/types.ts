@@ -3,7 +3,7 @@
  * Every important claim in a final answer should trace back to at least one of these.
  */
 export interface Evidence {
-  source: "linear" | "github";
+  source: "linear" | "github" | "slack";
   /** Provider-native identifier (e.g. Linear issue identifier, PR number) so a human can look it up. */
   id: string;
   url?: string;

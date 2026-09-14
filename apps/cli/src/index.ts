@@ -6,6 +6,7 @@ import {
   McpLinearIssueTracker,
 } from "@agency-os/integration-linear-mcp-client";
 import { GitHubPullRequestSource } from "@agency-os/integration-github";
+import { SlackConversationSource } from "@agency-os/integration-slack";
 import { loadProjectRegistry } from "@agency-os/shared";
 import { investigate, type AgentDependencies } from "@agency-os/agent";
 
@@ -46,6 +47,7 @@ async function main(): Promise<void> {
   const anthropicApiKey = requireEnv("ANTHROPIC_API_KEY");
   const linearApiKey = requireEnv("LINEAR_API_KEY");
   const githubToken = requireEnv("GITHUB_TOKEN");
+  const slackBotToken = requireEnv("SLACK_BOT_TOKEN");
 
   // Linear is reached through the custom MCP server (mcp/linear), spawned
   // as a child process over stdio; GitHub stays in-process (see
@@ -57,6 +59,7 @@ async function main(): Promise<void> {
     const deps: AgentDependencies = {
       issueTracker: new McpLinearIssueTracker(linearMcpClient),
       pullRequestSource: new GitHubPullRequestSource(githubToken),
+      slackMessageSource: new SlackConversationSource(slackBotToken),
       projectRegistry: loadProjectRegistry(),
     };
 
