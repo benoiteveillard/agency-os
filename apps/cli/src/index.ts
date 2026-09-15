@@ -189,6 +189,16 @@ async function main(): Promise<void> {
       resultMetadata.evidenceCount = result.evidence.length;
       resultMetadata.toolCallCount = result.trace.length;
       resultMetadata.proposedAction = result.proposedAction !== undefined;
+      // Scalar-only, same privacy boundary as everything else here — never
+      // the assessment's summary/blocker prose. Mirrors apps/eval-runner.
+      resultMetadata.assessmentPresent = result.assessment !== undefined;
+      if (result.assessment) {
+        resultMetadata.assessmentVerdict = result.assessment.verdict;
+        resultMetadata.assessmentBlockerCount =
+          result.assessment.blockers.length;
+        resultMetadata.assessmentUncertaintyCount =
+          result.assessment.uncertainty?.length ?? 0;
+      }
       if (auditRecord) {
         resultMetadata.approvalDecision = auditRecord.decision;
         if (auditRecord.execution) {

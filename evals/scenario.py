@@ -42,6 +42,12 @@ class Scenario:
     max_tool_calls: int | None = None
     required_evidence_sources: list[str] = field(default_factory=list)
     expected_conclusion: str | None = None
+    # Phase 7.1: the structured Assessment.verdict a passing trial's
+    # resultMetadata.assessmentVerdict must equal, when this scenario's
+    # question is assessment-shaped. Independent of expected_conclusion
+    # (the older, narrative-judge-graded label) — see graders.py's
+    # grade_assessment_correctness and docs/evaluation.md.
+    expected_assessment_verdict: str | None = None
     # Verbatim, for adversarial_robustness judge prompts only — the actual
     # fixture Slack data (not this field) is what the agent actually sees.
     injected_instruction: str | None = None

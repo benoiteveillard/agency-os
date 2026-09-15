@@ -12,10 +12,12 @@ import type {
   SlackMessageSource,
   SlackMessage,
 } from "@agency-os/integration-slack";
+import type { Evidence } from "@agency-os/shared";
 import {
   executeTool,
   type AgentDependencies,
   type ProposalState,
+  type AssessmentState,
 } from "./tools.js";
 
 const fakeProjectIssues: ProjectIssuesResult = {
@@ -360,5 +362,243 @@ describe("executeTool", () => {
     await expect(
       executeTool("linear_delete_everything", {}, makeDeps()),
     ).rejects.toThrow(/Unknown tool/);
+  });
+});
+
+describe("executeTool submit_assessment", () => {
+  const knownEvidence: Evidence[] = [
+    { source: "linear", id: "JUS-24", summary: "..." },
+    { source: "github", id: "#12", summary: "..." },
+  ];
+
+  const validInput = {
+    verdict: "high_risk",
+    summary: "Launch is at risk: an urgent blocker is unresolved.",
+    blockers: [
+      {
+        title: "CMS migration incomplete",
+        explanation: "JUS-24 is blocked by unresolved urgent work.",
+        sources: [{ evidenceId: "linear:JUS-24", role: "authoritative" }],
+      },
+    ],
+  };
+
+  // Any I/O call throws — proves submit_assessment never reaches it,
+  // stronger than merely not asserting a call count.
+  function makeThrowingDeps(): AgentDependencies {
+    return makeDeps({
+      issueTracker: {
+        listProjectIssues: async () => {
+          throw new Error("issueTracker should not be called");
+        },
+        getIssue: async () => {
+          throw new Error("issueTracker should not be called");
+        },
+      },
+      pullRequestSource: {
+        listPullRequests: async () => {
+          throw new Error("pullRequestSource should not be called");
+        },
+        getWorkflowRunStatus: async () => {
+          throw new Error("pullRequestSource should not be called");
+        },
+      },
+      slackMessageSource: {
+        getChannelMessages: async () => {
+          throw new Error("slackMessageSource should not be called");
+        },
+        getThread: async () => {
+          throw new Error("slackMessageSource should not be called");
+        },
+      },
+    });
+  }
+
+  it("accepts a valid assessment, performing zero external I/O", async () => {
+    const assessmentState: AssessmentState = {};
+    const result = await executeTool(
+      "submit_assessment",
+      validInput,
+      makeThrowingDeps(),
+      {},
+      assessmentState,
+      knownEvidence,
+    );
+
+    expect(assessmentState.current).toEqual({
+      verdict: "high_risk",
+      summary: validInput.summary,
+      blockers: validInput.blockers,
+      uncertainty: undefined,
+    });
+    expect(result.evidence).toEqual([]);
+    expect((result.data as { status: string }).status).toBe("accepted");
+  });
+
+  it.each(["on_track", "at_risk", "high_risk", "insufficient_evidence"])(
+    "accepts verdict value %s",
+    async (verdict) => {
+      const assessmentState: AssessmentState = {};
+      const result = await executeTool(
+        "submit_assessment",
+        { ...validInput, verdict, blockers: [] },
+        makeThrowingDeps(),
+        {},
+        assessmentState,
+        knownEvidence,
+      );
+      expect(assessmentState.current?.verdict).toBe(verdict);
+      expect((result.data as { verdict: string }).verdict).toBe(verdict);
+    },
+  );
+
+  it("rejects an invalid verdict value", async () => {
+    await expect(
+      executeTool(
+        "submit_assessment",
+        { ...validInput, verdict: "very_bad" },
+        makeThrowingDeps(),
+        {},
+        {},
+        knownEvidence,
+      ),
+    ).rejects.toThrow(/invalid "verdict" value/);
+  });
+
+  it("rejects an assessment referencing unknown evidence, without exposing evidence bodies", async () => {
+    const badInput = {
+      ...validInput,
+      blockers: [
+        {
+          title: "Fabricated blocker",
+          explanation: "...",
+          sources: [{ evidenceId: "linear:JUS-999", role: "authoritative" }],
+        },
+      ],
+    };
+
+    await expect(
+      executeTool(
+        "submit_assessment",
+        badInput,
+        makeThrowingDeps(),
+        {},
+        {},
+        knownEvidence,
+      ),
+    ).rejects.toThrow(/evidenceId\(s\) "linear:JUS-999" were not found/);
+
+    // The correction hint lists valid evidenceId strings (safe — just IDs)
+    // but must never include evidence content/summaries.
+    try {
+      await executeTool(
+        "submit_assessment",
+        badInput,
+        makeThrowingDeps(),
+        {},
+        {},
+        knownEvidence,
+      );
+      expect.unreachable();
+    } catch (err) {
+      const message = (err as Error).message;
+      expect(message).toContain("linear:JUS-24");
+      expect(message).not.toContain(knownEvidence[0]?.summary);
+    }
+  });
+
+  it("accepts an assessment whose sources reference real evidence", async () => {
+    const assessmentState: AssessmentState = {};
+    await executeTool(
+      "submit_assessment",
+      validInput,
+      makeThrowingDeps(),
+      {},
+      assessmentState,
+      knownEvidence,
+    );
+    expect(assessmentState.current?.blockers[0]?.sources[0]).toEqual({
+      evidenceId: "linear:JUS-24",
+      role: "authoritative",
+    });
+  });
+
+  it("rejects a second assessment in the same run instead of overwriting the first", async () => {
+    const assessmentState: AssessmentState = {};
+    const deps = makeThrowingDeps();
+
+    await executeTool(
+      "submit_assessment",
+      validInput,
+      deps,
+      {},
+      assessmentState,
+      knownEvidence,
+    );
+
+    await expect(
+      executeTool(
+        "submit_assessment",
+        { ...validInput, verdict: "on_track", blockers: [] },
+        deps,
+        {},
+        assessmentState,
+        knownEvidence,
+      ),
+    ).rejects.toThrow(/An assessment has already been submitted/);
+
+    // The first assessment must still be the one on record, untouched.
+    expect(assessmentState.current?.verdict).toBe("high_risk");
+  });
+
+  it("does not touch proposalState — assessment and proposed action are independent", async () => {
+    const proposalState: ProposalState = {};
+    const assessmentState: AssessmentState = {};
+    const deps = makeThrowingDeps();
+
+    await executeTool(
+      "propose_linear_issue",
+      {
+        projectSlug: "acme-website-migration",
+        title: "Follow-up",
+        description: "...",
+        rationale: "...",
+      },
+      makeDeps(),
+      proposalState,
+    );
+    await executeTool(
+      "submit_assessment",
+      validInput,
+      deps,
+      proposalState,
+      assessmentState,
+      knownEvidence,
+    );
+
+    expect(proposalState.current).toBeDefined();
+    expect(assessmentState.current).toBeDefined();
+  });
+
+  it("exposes only safe, scalar trace attributes — never assessment prose", async () => {
+    const result = await executeTool(
+      "submit_assessment",
+      validInput,
+      makeThrowingDeps(),
+      {},
+      {},
+      knownEvidence,
+    );
+
+    expect(result.traceAttributes).toEqual({
+      verdict: "high_risk",
+      blockerCount: 1,
+      uncertaintyCount: 0,
+    });
+    const values = Object.values(result.traceAttributes ?? {});
+    expect(values).not.toContain(validInput.summary);
+    expect(
+      values.some((v) => typeof v === "string" && v.includes("CMS migration")),
+    ).toBe(false);
   });
 });

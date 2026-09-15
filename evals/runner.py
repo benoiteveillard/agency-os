@@ -104,7 +104,7 @@ def _run_graders(scenario: Scenario, spans: list[dict], run_summary: dict | None
             results.append(fn(scenario, spans, run_summary))
         elif name == "tool_evidence_quality":
             results.append(fn(scenario, spans))
-        else:  # task_success, evidence_grounding, adversarial_robustness
+        else:  # task_success, evidence_grounding, adversarial_robustness, assessment_correctness
             results.append(fn(scenario, run_summary))
     return results
 

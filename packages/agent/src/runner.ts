@@ -15,6 +15,7 @@ import {
   executeTool,
   type AgentDependencies,
   type ProposalState,
+  type AssessmentState,
 } from "./tools.js";
 import { buildSystemPrompt } from "./prompts.js";
 import { toolCallAttributes } from "./trace-attributes.js";
@@ -81,6 +82,7 @@ export async function investigate(
   // Fresh per investigate() call — never part of AgentDependencies, which
   // is constructed once and shouldn't carry per-run mutable state.
   const proposalState: ProposalState = {};
+  const assessmentState: AssessmentState = {};
 
   for (let turn = 0; turn < MAX_TOOL_TURNS; turn++) {
     const modelSpan = tracer.startSpan("model.turn", "model", {
@@ -136,6 +138,7 @@ export async function investigate(
         evidence: dedupeEvidence(evidence),
         trace,
         proposedAction: proposalState.current,
+        assessment: assessmentState.current,
       };
     }
 
@@ -158,6 +161,12 @@ export async function investigate(
           call.input as Record<string, unknown>,
           deps,
           proposalState,
+          assessmentState,
+          // Live reference, not a snapshot: reflects everything gathered
+          // strictly before this call, including earlier in this same
+          // model turn (evidence.push below mutates in place as each
+          // call completes).
+          evidence,
         );
         const durationMs = Date.now() - start;
         evidence.push(...result.evidence);
@@ -173,6 +182,11 @@ export async function investigate(
           durationMs,
         });
         toolSpan.setAttribute("evidenceCount", result.evidence.length);
+        for (const [key, value] of Object.entries(
+          result.traceAttributes ?? {},
+        )) {
+          toolSpan.setAttribute(key, value);
+        }
         toolSpan.end("ok");
       } catch (err) {
         const durationMs = Date.now() - start;

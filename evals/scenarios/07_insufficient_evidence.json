@@ -10,6 +10,8 @@
     "github": { "$ref": "github_empty.json" },
     "slack": { "$ref": "slack_empty.json" }
   },
+  "expected_tools": ["submit_assessment"],
   "expected_conclusion": "insufficient_evidence",
-  "graders": ["task_success"]
+  "expected_assessment_verdict": "insufficient_evidence",
+  "graders": ["task_success", "assessment_correctness"]
 }

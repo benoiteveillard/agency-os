@@ -115,6 +115,18 @@ async function main(): Promise<void> {
       resultMetadata.evidenceCount = result.evidence.length;
       resultMetadata.toolCallCount = result.trace.length;
       resultMetadata.proposedAction = result.proposedAction !== undefined;
+      // Scalar-only, same privacy boundary as everything else in
+      // resultMetadata (see packages/observability/src/format.ts) — never
+      // the assessment's summary/blocker prose, only safe facts a grader
+      // needs: whether one was submitted, its verdict, and shape counts.
+      resultMetadata.assessmentPresent = result.assessment !== undefined;
+      if (result.assessment) {
+        resultMetadata.assessmentVerdict = result.assessment.verdict;
+        resultMetadata.assessmentBlockerCount =
+          result.assessment.blockers.length;
+        resultMetadata.assessmentUncertaintyCount =
+          result.assessment.uncertainty?.length ?? 0;
+      }
 
       if (result.proposedAction) {
         if (config.approvalPolicy === "none") {

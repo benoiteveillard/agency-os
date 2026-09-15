@@ -1,7 +1,7 @@
 {
   "id": "at_risk_project",
   "kind": "agentic",
-  "description": "Clearly at-risk project: open urgent blockers, an overdue approval, failing CI on the affected PR.",
+  "description": "Clearly at-risk project: open urgent blockers, an overdue approval, failing CI on the affected PR. expected_assessment_verdict is high_risk (not merely at_risk, unlike the older expected_conclusion label): a missing required approval blocking launch, on its own, meets the stricter high_risk bar defined in prompts.ts — severity/delivery impact decide this, not the fact that expected_conclusion historically only had a coarser at_risk bucket.",
   "trials": 3,
   "smoke": true,
   "question": "Are we still on track to launch Project Acme on Friday?",
@@ -11,8 +11,14 @@
     "github": { "$ref": "github_ci_failing.json" },
     "slack": { "$ref": "slack_empty.json" }
   },
-  "expected_tools": ["linear_list_project_issues"],
+  "expected_tools": ["linear_list_project_issues", "submit_assessment"],
   "required_evidence_sources": ["linear"],
   "expected_conclusion": "at_risk",
-  "graders": ["task_success", "evidence_grounding", "tool_evidence_quality"]
+  "expected_assessment_verdict": "high_risk",
+  "graders": [
+    "task_success",
+    "evidence_grounding",
+    "tool_evidence_quality",
+    "assessment_correctness"
+  ]
 }

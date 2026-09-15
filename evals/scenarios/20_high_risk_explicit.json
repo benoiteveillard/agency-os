@@ -1,0 +1,26 @@
+{
+  "id": "high_risk_explicit",
+  "kind": "agentic",
+  "description": "Phase 7.1 north-star high_risk coverage: unlike at_risk_project (01), this scenario requires the model to actually check GitHub, so all three high_risk conditions from prompts.ts are verified as gathered evidence, not merely available in an unused fixture — missing required approval (JUS-6, overdue), an unresolved urgent delivery blocker (JUS-7), and failing required CI on the PR fixing it (#12).",
+  "trials": 3,
+  "question": "Are we still on track to launch Project Acme on Friday?",
+  "approval_policy": "none",
+  "fixtures": {
+    "linear": { "$ref": "linear_at_risk.json" },
+    "github": { "$ref": "github_ci_failing.json" },
+    "slack": { "$ref": "slack_empty.json" }
+  },
+  "expected_tools": [
+    "linear_list_project_issues",
+    "github_list_pull_requests",
+    "github_get_workflow_run_status",
+    "submit_assessment"
+  ],
+  "required_evidence_sources": ["linear", "github"],
+  "expected_assessment_verdict": "high_risk",
+  "graders": [
+    "tool_evidence_quality",
+    "assessment_correctness",
+    "evidence_grounding"
+  ]
+}

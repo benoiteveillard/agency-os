@@ -6,8 +6,13 @@ import type {
   SlackMessageSource,
   SlackMessage,
 } from "@agency-os/integration-slack";
+import type { AttributeValue } from "@agency-os/observability";
 import {
   computeApprovalDigest,
+  type Assessment,
+  type AssessmentBlocker,
+  type AssessmentSourceRef,
+  type AssessmentVerdict,
   type Evidence,
   type ProjectRegistryEntry,
   type ProposedAction,
@@ -23,6 +28,16 @@ export interface AgentDependencies {
 export interface ToolExecutionResult {
   data: unknown;
   evidence: Evidence[];
+  /**
+   * Extra safe, scalar-only span attributes specific to this tool call —
+   * e.g. submit_assessment's verdict/blockerCount/uncertaintyCount.
+   * Deliberately opt-in and separate from TOOL_ATTRIBUTE_WHITELIST
+   * (trace-attributes.ts), which whitelists raw *input* fields: this is
+   * for safe facts about the *result* that a tool itself chooses to
+   * expose, the same way evidenceCount already is in runner.ts. Most
+   * tools have none.
+   */
+  traceAttributes?: Record<string, AttributeValue>;
 }
 
 /**
@@ -38,6 +53,17 @@ export interface ProposalState {
   current?: ProposedAction;
 }
 
+/**
+ * Same shape and same reason as ProposalState: holds at most one accepted
+ * structured assessment for the current investigation. First valid
+ * assessment wins — a second attempt (valid or not) is rejected rather
+ * than silently overwriting the first, so a result never contains a
+ * structured assessment that was mutated partway through the run.
+ */
+export interface AssessmentState {
+  current?: Assessment;
+}
+
 const PRIORITY_LABEL_TO_VALUE: Record<string, number> = {
   none: 0,
   urgent: 1,
@@ -45,6 +71,19 @@ const PRIORITY_LABEL_TO_VALUE: Record<string, number> = {
   medium: 3,
   low: 4,
 };
+
+const VALID_VERDICTS = new Set<AssessmentVerdict>([
+  "on_track",
+  "at_risk",
+  "high_risk",
+  "insufficient_evidence",
+]);
+
+const VALID_SOURCE_ROLES = new Set<AssessmentSourceRef["role"]>([
+  "authoritative",
+  "corroborating",
+  "historical",
+]);
 
 /**
  * Tool names use underscores, not the dotted `linear.list_project_issues`
@@ -172,6 +211,68 @@ export const TOOLS: Anthropic.Tool[] = [
       required: ["projectSlug", "title", "description", "rationale"],
     },
   },
+  {
+    name: "submit_assessment",
+    description:
+      'Submit a structured, machine-readable project-risk assessment for this investigation. This performs no external I/O and does not create, propose, or execute anything — it only records a structured summary of the conclusion you\'ve already reached, alongside your normal narrative answer. Use this only for questions about overall project delivery/launch readiness (e.g. "are we on track to launch X", "what\'s the risk on X") — not for narrower questions about one specific piece of evidence (e.g. the CI status of one PR, one Slack thread). Every source you cite must be an evidenceId already returned by one of your own tool calls this investigation (format: "<source>:<id>", e.g. "linear:JUS-24", "github:#12", "slack:1726142400.000100") — inventing one will be rejected. Only one assessment is allowed per investigation.',
+    input_schema: {
+      type: "object",
+      properties: {
+        verdict: {
+          type: "string",
+          enum: ["on_track", "at_risk", "high_risk", "insufficient_evidence"],
+          description:
+            "on_track: no unresolved issue currently threatens the stated delivery target. at_risk: one or more unresolved issues could threaten delivery, but nothing establishes a severe or immediate launch threat. high_risk: evidence shows an unresolved critical blocker, a failed required check, missing required approval, or another condition that materially threatens the delivery target — severity and delivery impact decide this, not raw blocker count. insufficient_evidence: you cannot responsibly determine readiness from what's available.",
+        },
+        summary: {
+          type: "string",
+          description:
+            "One or two sentences: the verdict and why, in plain language.",
+        },
+        blockers: {
+          type: "array",
+          description:
+            "Concrete unresolved issues supporting the verdict. Empty array if none (e.g. for on_track).",
+          items: {
+            type: "object",
+            properties: {
+              title: { type: "string" },
+              explanation: { type: "string" },
+              sources: {
+                type: "array",
+                description: "At least one evidenceId backing this blocker.",
+                items: {
+                  type: "object",
+                  properties: {
+                    evidenceId: {
+                      type: "string",
+                      description:
+                        'An evidenceId already returned this investigation, e.g. "linear:JUS-24".',
+                    },
+                    role: {
+                      type: "string",
+                      enum: ["authoritative", "corroborating", "historical"],
+                      description:
+                        "authoritative: the system of record for this claim (Linear for delivery state, GitHub for CI). corroborating: supports the claim but isn't the system of record. historical: superseded by a more current authoritative fact — e.g. an older Slack message a current Linear/GitHub state has since resolved.",
+                    },
+                  },
+                  required: ["evidenceId", "role"],
+                },
+              },
+            },
+            required: ["title", "explanation", "sources"],
+          },
+        },
+        uncertainty: {
+          type: "array",
+          description:
+            "Optional: specific open questions or gaps in the evidence, if any.",
+          items: { type: "string" },
+        },
+      },
+      required: ["verdict", "summary", "blockers"],
+    },
+  },
 ];
 
 function resolveProject(
@@ -194,6 +295,103 @@ function requireString(input: Record<string, unknown>, key: string): string {
     throw new Error(`Tool input missing required string field "${key}"`);
   }
   return value;
+}
+
+/**
+ * Deterministic, application-side gate: every source an assessment cites
+ * must resolve to a real Evidence item already collected this
+ * investigation (matched on the same `${source}:${id}` composite key
+ * runner.ts's dedupeEvidence uses) — never fabricated by the model and
+ * silently accepted. On failure, the error names only the offending and
+ * valid evidenceId *strings*, never evidence summaries/bodies, and is
+ * phrased to match categorizeError's existing `invalid ".*" value` ->
+ * tool_validation pattern (packages/observability/src/redact.ts) — Claude
+ * can retry with corrected references within the same tool loop.
+ */
+function validateAssessmentInput(
+  input: Record<string, unknown>,
+  evidenceSoFar: readonly Evidence[],
+): Assessment {
+  const verdictValue = requireString(input, "verdict");
+  if (!VALID_VERDICTS.has(verdictValue as AssessmentVerdict)) {
+    throw new Error(
+      `Tool input has an invalid "verdict" value: "${verdictValue}". Must be one of: ${[...VALID_VERDICTS].join(", ")}.`,
+    );
+  }
+  const verdict = verdictValue as AssessmentVerdict;
+  const summary = requireString(input, "summary");
+
+  const rawBlockers = input.blockers;
+  if (!Array.isArray(rawBlockers)) {
+    throw new Error('Tool input missing required array field "blockers"');
+  }
+
+  const knownEvidenceIds = new Set(
+    evidenceSoFar.map((item) => `${item.source}:${item.id}`),
+  );
+  const unknownRefs = new Set<string>();
+
+  const blockers: AssessmentBlocker[] = rawBlockers.map((raw, index) => {
+    if (typeof raw !== "object" || raw === null) {
+      throw new Error(
+        `Tool input has an invalid "blockers[${index}]" value: not an object.`,
+      );
+    }
+    const blockerInput = raw as Record<string, unknown>;
+    const title = requireString(blockerInput, "title");
+    const explanation = requireString(blockerInput, "explanation");
+    const rawSources = blockerInput.sources;
+    if (!Array.isArray(rawSources)) {
+      throw new Error(
+        `Tool input missing required array field "blockers[${index}].sources"`,
+      );
+    }
+
+    const sources: AssessmentSourceRef[] = rawSources.map(
+      (rawSource, sourceIndex) => {
+        if (typeof rawSource !== "object" || rawSource === null) {
+          throw new Error(
+            `Tool input has an invalid "blockers[${index}].sources[${sourceIndex}]" value: not an object.`,
+          );
+        }
+        const sourceInput = rawSource as Record<string, unknown>;
+        const evidenceId = requireString(sourceInput, "evidenceId");
+        const roleValue = requireString(sourceInput, "role");
+        if (!VALID_SOURCE_ROLES.has(roleValue as AssessmentSourceRef["role"])) {
+          throw new Error(
+            `Tool input has an invalid "role" value: "${roleValue}". Must be one of: ${[...VALID_SOURCE_ROLES].join(", ")}.`,
+          );
+        }
+        if (!knownEvidenceIds.has(evidenceId)) {
+          unknownRefs.add(evidenceId);
+        }
+        return { evidenceId, role: roleValue as AssessmentSourceRef["role"] };
+      },
+    );
+
+    return { title, explanation, sources };
+  });
+
+  if (unknownRefs.size > 0) {
+    throw new Error(
+      `Tool input has an invalid "sources" value: evidenceId(s) ${[...unknownRefs].map((id) => `"${id}"`).join(", ")} were not found in this investigation's evidence. Valid evidenceId values so far: ${[...knownEvidenceIds].join(", ") || "(none yet)"}.`,
+    );
+  }
+
+  let uncertainty: string[] | undefined;
+  if (input.uncertainty !== undefined) {
+    if (
+      !Array.isArray(input.uncertainty) ||
+      input.uncertainty.some((item) => typeof item !== "string")
+    ) {
+      throw new Error(
+        'Tool input has an invalid "uncertainty" value: must be an array of strings.',
+      );
+    }
+    uncertainty = input.uncertainty as string[];
+  }
+
+  return { verdict, summary, blockers, uncertainty };
 }
 
 /**
@@ -223,6 +421,8 @@ export async function executeTool(
   input: Record<string, unknown>,
   deps: AgentDependencies,
   proposalState: ProposalState = {},
+  assessmentState: AssessmentState = {},
+  evidenceSoFar: readonly Evidence[] = [],
 ): Promise<ToolExecutionResult> {
   switch (name) {
     case "linear_list_project_issues": {
@@ -371,6 +571,35 @@ export async function executeTool(
           summary: `Proposed creating a Linear issue "${title}" in ${project.displayName}. This has NOT been created — it requires separate human approval outside this conversation.`,
         },
         evidence: [],
+      };
+    }
+
+    case "submit_assessment": {
+      if (assessmentState.current) {
+        throw new Error(
+          "An assessment has already been submitted for this run. Only one assessment is allowed per investigation.",
+        );
+      }
+
+      // Zero external I/O, same as propose_linear_issue: this only
+      // validates and records structured output to in-memory run state.
+      // It never touches issueTracker/pullRequestSource/slackMessageSource,
+      // never calls another model, and never triggers approval.
+      const assessment = validateAssessmentInput(input, evidenceSoFar);
+      assessmentState.current = assessment;
+
+      return {
+        data: {
+          status: "accepted",
+          verdict: assessment.verdict,
+          blockerCount: assessment.blockers.length,
+        },
+        evidence: [],
+        traceAttributes: {
+          verdict: assessment.verdict,
+          blockerCount: assessment.blockers.length,
+          uncertaintyCount: assessment.uncertainty?.length ?? 0,
+        },
       };
     }
 

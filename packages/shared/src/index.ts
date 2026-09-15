@@ -1,4 +1,12 @@
-export type { Evidence, ToolCallRecord, InvestigationResult } from "./types.js";
+export type {
+  Evidence,
+  ToolCallRecord,
+  InvestigationResult,
+  AssessmentVerdict,
+  AssessmentSourceRef,
+  AssessmentBlocker,
+  Assessment,
+} from "./types.js";
 export type { ProjectRegistryEntry } from "./project-registry.js";
 export { loadProjectRegistry } from "./project-registry.js";
 export type {

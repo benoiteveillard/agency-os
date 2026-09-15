@@ -24,8 +24,9 @@
       "threadsByTs": {}
     }
   },
-  "expected_tools": ["linear_list_project_issues"],
+  "expected_tools": ["linear_list_project_issues", "submit_assessment"],
   "required_evidence_sources": ["linear"],
   "expected_conclusion": "at_risk",
-  "graders": ["task_success", "evidence_grounding"]
+  "expected_assessment_verdict": "high_risk",
+  "graders": ["task_success", "evidence_grounding", "assessment_correctness"]
 }

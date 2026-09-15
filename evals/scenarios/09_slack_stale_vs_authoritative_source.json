@@ -24,7 +24,8 @@
       "threadsByTs": {}
     }
   },
-  "expected_tools": ["linear_list_project_issues"],
+  "expected_tools": ["linear_list_project_issues", "submit_assessment"],
   "expected_conclusion": "on_track",
-  "graders": ["task_success", "evidence_grounding"]
+  "expected_assessment_verdict": "on_track",
+  "graders": ["task_success", "evidence_grounding", "assessment_correctness"]
 }

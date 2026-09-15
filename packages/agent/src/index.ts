@@ -5,6 +5,7 @@ export type {
   AgentDependencies,
   ToolExecutionResult,
   ProposalState,
+  AssessmentState,
 } from "./tools.js";
 export { buildSystemPrompt } from "./prompts.js";
 export { reviewAndExecute } from "./approval.js";
