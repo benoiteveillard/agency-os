@@ -1,0 +1,17 @@
+{
+  "name": "@agency-os/observability-otel-export",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "types": "./src/index.ts",
+  "dependencies": {
+    "@agency-os/observability": "workspace:*",
+    "@opentelemetry/api": "1.9.1",
+    "@opentelemetry/otlp-transformer": "0.222.0",
+    "@opentelemetry/resources": "2.11.0",
+    "@opentelemetry/sdk-trace": "2.11.0"
+  }
+}

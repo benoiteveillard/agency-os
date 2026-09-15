@@ -26,6 +26,7 @@ import {
   serializeTraceFile,
   type RunSummary,
 } from "@agency-os/observability";
+import { exportTrace } from "@agency-os/observability-otel-export";
 
 // Resolve the repo-root .env by file location, not cwd: pnpm --filter runs
 // this script with cwd set to apps/cli, so dotenv's default cwd-relative
@@ -208,6 +209,21 @@ async function main(): Promise<void> {
     console.error("\n=== Trace ===");
     console.error(formatTraceTree(tracer.getSpans()));
     await persistTrace(tracer, { question, finalAnswer, resultMetadata });
+
+    // Best-effort, disabled by default (OTEL_EXPORT_ENABLED unset). Always
+    // runs after local JSONL is already durably written — local trace and
+    // the investigation's own result are never contingent on this
+    // succeeding. See docs/decisions.md.
+    const exportResult = await exportTrace(tracer.getSpans());
+    if (exportResult.attempted) {
+      console.error(
+        exportResult.ok
+          ? "Trace exported to configured OTLP endpoint."
+          : `OTLP export failed (local trace unaffected): ${exportResult.error}`,
+      );
+    } else if (!exportResult.ok) {
+      console.error(`OTLP export not attempted: ${exportResult.error}`);
+    }
   }
 }
 

@@ -762,3 +762,159 @@ Zero safety incidents involving an actual write, in every run this phase.
 budget) — or when the separate tool-loop reliability finding above gets
 its own investigation, which may independently affect this turn's
 behavior.
+
+---
+
+## Phase 6.1: remote trace export — Grafana Cloud/Tempo, not Cloudflare
+
+**Context.** Phase 4 built `packages/observability` as an internal,
+OTel-_shaped_ tracing model with zero OpenTelemetry runtime dependency,
+explicitly deferring the question of a real export destination. Phase 6
+researched Cloudflare's actual current tracing products (Workers
+Observability, Agents SDK tracing, AI Gateway OTel integration) directly
+against their own docs before choosing anything.
+
+**Why Cloudflare was rejected as the end-to-end trace backend.** Verified
+directly, not assumed: every Cloudflare tracing product is either (a)
+auto-instrumentation for code _running on_ Cloudflare Workers, with
+telemetry optionally exported _out_ to a third-party OTLP destination, or
+(b) AI Gateway's own model-request spans, again exported _out_ to a
+destination you configure. None of them expose an _ingestion_ endpoint
+that accepts arbitrary external OTLP traces for visualization in
+Cloudflare's own UI. The only way to see this agent's `agent.run` tree
+literally rendered in Cloudflare's dashboard would be running the agent
+as a Worker or via the Cloudflare Agents SDK — ruled out from the start,
+since this project's runtime is a plain Node CLI and migrating it purely
+to obtain a trace UI was explicitly out of scope. See the Phase 6 design
+report (this repo's conversation history) for the full product-by-product
+research.
+
+**Why Grafana Cloud / Tempo.** A real, standards-compliant OTLP/HTTP
+ingestion endpoint with a genuine trace-waterfall UI, a free tier (50GB
+traces/month — far beyond this project's scale) and no framework
+migration required. Live-verified end-to-end (see below).
+
+**Decision: `packages/observability-otel-export` is a new, separate
+package — `packages/observability` itself gained zero dependencies.**
+`Tracer`/`Span`/`SpanRecord` are completely unchanged; the export adapter
+only ever consumes `Tracer.getSpans()` after a run completes. One
+instrumentation call site (`apps/cli`), not two — nothing in
+`packages/agent` or `packages/observability` knows an OTLP exporter
+exists. `packages/observability-otel-export/src/dependency-boundary.test.ts`
+enforces this both ways: `packages/observability` has zero dependencies,
+and only this new package is allowed to depend on it plus
+`@opentelemetry/*`.
+
+**Serialization: real OTel packages for wire-format correctness, no
+TracerProvider/context-propagation machinery.** `@opentelemetry/otlp-transformer`'s
+`JsonTraceSerializer` is called directly against hand-constructed
+`ReadableSpan`-shaped plain objects (`packages/observability-otel-export/src/map-span.ts`)
+— confirmed via real installed `.d.ts` files that `ReadableSpan` is a
+plain, duck-typeable interface, not something requiring a live SDK
+`Tracer`/`Span` instance. `@opentelemetry/resources`' `resourceFromAttributes()`
+is used for the one field (`Resource`) explicitly documented as
+"NOT user-implementable." The actual HTTP POST is a bare `fetch()` call —
+no exporter class, no retry queue, no batching processor: a full trace is
+already collected in memory and sent once, so that machinery buys nothing
+here. Versions pinned after installing and inspecting the real packages
+in a scratch directory (`@opentelemetry/api@1.9.1`,
+`@opentelemetry/otlp-transformer@0.222.0`,
+`@opentelemetry/resources@2.11.0`,
+`@opentelemetry/sdk-trace@2.11.0` — the last one type-only, for the
+`ReadableSpan` type import, zero runtime footprint).
+
+**Trace identity is preserved byte-for-byte, not re-derived.**
+`SpanRecord.traceId`/`spanId`/`parentSpanId` are copied verbatim into the
+exported `SpanContext` — Phase 4 chose their exact width (128-bit/64-bit
+hex) specifically so this needs no re-encoding, and OTLP's own wire type
+(`ISpan.traceId: string | Uint8Array`) accepts the hex string directly.
+Live-verified, not just unit-tested: two real investigations were run,
+their local `.traces/<traceId>.jsonl` files compared span-by-span against
+what Grafana's Tempo UI showed for the same trace ID — exact match on
+span count (13 and 16 respectively), names, nesting, and every duration
+down to the millisecond.
+
+**GenAI semantic conventions: `model.turn` only, additive, nothing
+invented.** `gen_ai.usage.input_tokens`/`gen_ai.usage.output_tokens` are
+emitted as aliases alongside the existing `inputTokens`/`outputTokens`
+attribute names — verified live in Grafana showing both side by side.
+`gen_ai.request.model` is deliberately _not_ emitted: the model name
+string is never recorded in `SpanRecord.attributes` today, and
+backfilling it from `runner.ts`'s `DEFAULT_MODEL` constant would silently
+drift from the real value whenever a caller passes a different `model`
+option. GenAI conventions were confirmed still experimental/unstable at
+implementation time (checked against the OTel semantic-conventions repo,
+not assumed) — this is exactly why the mapping stays purely additive
+rather than replacing anything. `tool.*`/`approval.*`/`action.*` spans are
+plain custom OTel spans, as designed — nothing about them fits any GenAI
+convention, and forcing it would be worse than a plain custom span.
+Discovered live: Grafana has a separate, newer "Agent Observability"
+product (`Observability → Agent → Conversations`) that expects a richer
+conversation-level GenAI schema than this conservative mapping provides —
+it currently reports "No conversation found" for our traces. Noted as a
+future option, not pursued now; the plain Tempo trace-explorer view
+already answers every operational question this phase needs (see the
+Phase 6.1 completion report).
+
+**Privacy: the export layer does no content filtering, because it never
+receives content to filter.** `AttributeValue = string | number | boolean`
+(unchanged from Phase 4) makes it a compile error to attach anything else;
+the export adapter passes `SpanRecord.attributes` straight through plus
+its own small fixed key set (`agency.span.category`, `agency.error.category`,
+the two `gen_ai.usage.*` aliases). `RunSummary.finalAnswer` — raw model
+text — is never touched by this package at all; only `SpanRecord[]` is
+exported, never `RunSummary`. Live-verified, not just unit-tested: the
+actual serialized OTLP payload was captured via a local HTTP server
+standing in for the real endpoint before any live Grafana Cloud
+credentials existed, then grepped for secret-shaped strings, the literal
+Slack prompt-injection sentence, and every synthetic participant name —
+zero matches. After real Grafana credentials were added, the same checks
+were repeated by inspecting live span attribute panels directly in
+Grafana's UI across a `model.turn` span, two `tool.*` spans (including
+`tool.propose_linear_issue`, the one whose _local_ input contains a full
+title/description/rationale), and the `approval.decision` span — every
+one showed only the intended whitelist, nothing else.
+
+**Failure semantics — required ordering, verified live.** `agent
+completes → local JSONL written → remote export attempted`. A live test
+with `OTEL_EXPORT_ENABLED=true` pointed at a nonexistent host completed
+the investigation normally, printed the answer, wrote `.traces/`, and
+only then logged `OTLP export failed (local trace unaffected): fetch
+failed` — never touched the result. No retry logic: a single attempt,
+logged as a warning either way.
+
+**Local development and evals are unaffected.** `OTEL_EXPORT_ENABLED`
+unset (the default) means zero network calls, verified live with a normal
+`pnpm ask` run showing no export-related output at all — silent, not
+just harmless. `apps/eval-runner` was deliberately _not_ wired to this
+package this phase (Phase 5's evals remain local-JSONL-only, as they
+already were) — the exporter is reachable only from `apps/cli`.
+
+**How to enable remote export:** set three environment variables locally
+(never committed) —
+
+```
+OTEL_EXPORT_ENABLED=true
+OTEL_EXPORTER_OTLP_ENDPOINT=<your OTLP/HTTP base endpoint>
+OTEL_EXPORTER_OTLP_HEADERS=Authorization=Basic <your base64 credential, with a space after "Basic">
+```
+
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` (trace-signal-specific) takes
+precedence over `OTEL_EXPORTER_OTLP_ENDPOINT` if both are set — standard
+OTel exporter-config behavior, not project-specific. `OTEL_EXPORT_ENABLED`
+is the one non-standard variable: an explicit gate so that merely
+inheriting an `OTEL_EXPORTER_OTLP_ENDPOINT` from an unrelated tool in the
+shell can never silently turn export on.
+
+**How to correlate a local trace with the same trace remotely:** the
+trace ID in `.traces/<traceId>.jsonl`'s filename (and its `traceId` field
+on every line) is the _exact same_ ID to search for in Grafana Explore →
+select the Tempo datasource → TraceQL → paste the trace ID. No lookup
+table, no mapping step — verified live for two separate real traces.
+
+**Revisit when:** Cloudflare AI Gateway is worth adding as a _separate_,
+narrow, model-call-level view (Phase 6.2 — not started; would need its
+own privacy check, since AI Gateway logs raw prompts/completions by
+default) — or when Grafana's Agent Observability product's schema
+requirements are worth adopting for the richer conversation-level view
+noted above.
