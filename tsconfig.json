@@ -4,5 +4,6 @@
     "apps/**/src/**/*.ts",
     "packages/**/src/**/*.ts",
     "mcp/**/src/**/*.ts"
-  ]
+  ],
+  "exclude": ["apps/web/client"]
 }

@@ -4,7 +4,7 @@
   "type": "module",
   "packageManager": "pnpm@10.26.0",
   "scripts": {
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p apps/web/client",
     "lint": "eslint .",
     "format": "prettier --check .",
     "test": "vitest run",

@@ -205,3 +205,82 @@ known structured-tool retry failures and token overhead are unchanged.
 
 Implementation references: [Hono SSE helper](https://hono.dev/docs/helpers/streaming)
 and [Hono Node adapter](https://hono.dev/docs/getting-started/nodejs).
+
+## Frontend (Phase 7.3)
+
+`apps/web/client` is a React 19 + TypeScript + Vite SPA, a separate root
+(`apps/web/vite.config.ts`) inside the same package as the Hono server — one
+deployable unit, not two apps. It consumes the HTTP contract above exactly as
+documented; nothing in `apps/web/src` changed to make the frontend easier to
+build, except adding static-file serving itself (`apps/web/src/index.ts`,
+gated on `dist/client` existing — a no-op in dev, where Vite's own dev server
+handles the frontend). No new backend fields, agent behavior, prompts, tools,
+or eval changes were needed or made.
+
+Plain CSS (`apps/web/client/src/styles/global.css`, custom properties for
+tokens), no component library, no client-side router (one page), no global
+state library — `useReducer` in two hooks (`useInvestigation`,
+`useProposalDecision`) is the entire state model. No Markdown rendering
+dependency: `answer` and assessment prose render as plain text with
+preserved whitespace, never `dangerouslySetInnerHTML`, consistent with this
+doc's existing "never raw HTML" contract note above.
+
+`streamInvestigation` (`apps/web/client/src/api.ts`) hand-parses the SSE
+framing over `fetch` + `ReadableStream` (`EventSource` is GET-only and this
+endpoint is POST). The four progress rows shown to the user (Linear/GitHub/
+Slack/"Assessing launch readiness") are a live, uncapped reduction over
+`source.*`/`assessment.*` events — a row appears only once its first event
+arrives, never a fixed pre-rendered checklist; multiple tool calls against
+the same source collapse into one row; "Assessing" only reaches "done" on a
+genuine `assessment.ready` (never fabricated just because the investigation
+finished — a narrow, non-assessment question correctly shows no such row at
+all).
+
+### Local development
+
+`pnpm web` (root) now runs the Hono dev server and Vite's dev server
+together (`concurrently`), the latter proxying `/api` and `/health` to the
+former (`apps/web/vite.config.ts`). `pnpm build` (root) builds the compiled
+MCP bundle, the Hono server bundle, and the Vite client bundle, in that
+order; `apps/web/dist/client` is what `index.ts` serves statically in
+production. `apps/web/client` has its own `tsconfig.json` (DOM lib,
+`jsx: react-jsx`) deliberately kept out of the root `tsconfig.json`'s
+`include` — adding DOM lib to the shared `tsconfig.base.json` broke an
+unrelated Node file's `fetch` type resolution (`packages/observability-otel-export`),
+so `pnpm typecheck` now runs the root config and the client config as two
+separate `tsc --noEmit` invocations instead.
+
+### Synthetic-data disclosure
+
+A persistent, non-dismissible banner states the integrations are real APIs
+against synthetic project data — visible before any interaction, not gated
+behind a click.
+
+### Two bugs found and fixed during this phase, not present in Phase 7.2
+
+- **Stale-run race**: `useInvestigation`'s `run()` aborts the previous
+  fetch on a new call, but an already-buffered SSE chunk from the aborted
+  stream could still dispatch after the new run's `"start"` action landed,
+  bleeding old progress into the new run's state. Fixed with a per-run
+  generation counter (`runId`) the reducer checks before applying any
+  `message`/`transportError` action — caught by a test asserting a retry's
+  activity list starts genuinely empty, not by inspection.
+- **Mobile horizontal overflow**: `.app-body`'s single-column mobile grid
+  used a bare `1fr` track, which (per the CSS Grid `min-width: auto`
+  default) refused to shrink below the ask-input's intrinsic content width,
+  overflowing the viewport by ~26px at 390px width. Fixed with
+  `minmax(0, 1fr)`, matching the pattern the desktop two-column layout
+  already used correctly. Found via live verification (`document.documentElement.scrollWidth`
+  exceeding `clientWidth`), not caught by the component test suite, which
+  runs in jsdom without real layout — noted as a real gap: `jsdom` does not
+  execute CSS Grid box generation, so this class of overflow bug is only
+  visible in a real (or headless-Chromium) rendering engine.
+
+### Known, unchanged, and left alone
+
+The Phase 7.1 structured-tool retry finding remains fully present and was
+observed live in this phase's own verification (below) — unfixed, per this
+phase's explicit scope. The SSE progress UI keeps the wait legible
+throughout (steady "Assessing launch readiness" indicator, all completed
+sources shown, no fake completion) rather than hiding or timing out the
+wait, but does not shorten it.
