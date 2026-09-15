@@ -1,0 +1,18 @@
+{
+  "name": "@agency-os/runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "types": "./src/index.ts",
+  "dependencies": {
+    "@agency-os/agent": "workspace:*",
+    "@agency-os/integration-github": "workspace:*",
+    "@agency-os/integration-linear-mcp-client": "workspace:*",
+    "@agency-os/integration-linear-writer": "workspace:*",
+    "@agency-os/integration-slack": "workspace:*",
+    "@agency-os/shared": "workspace:*"
+  }
+}

@@ -8,12 +8,9 @@
   },
   "dependencies": {
     "@agency-os/agent": "workspace:*",
-    "@agency-os/integration-github": "workspace:*",
-    "@agency-os/integration-linear-mcp-client": "workspace:*",
-    "@agency-os/integration-linear-writer": "workspace:*",
-    "@agency-os/integration-slack": "workspace:*",
     "@agency-os/observability": "workspace:*",
     "@agency-os/observability-otel-export": "workspace:*",
+    "@agency-os/runtime": "workspace:*",
     "@agency-os/shared": "workspace:*",
     "dotenv": "17.4.2"
   }

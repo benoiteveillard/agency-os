@@ -9,7 +9,8 @@
     "format": "prettier --check .",
     "test": "vitest run",
     "ask": "pnpm --filter @agency-os/cli start --",
-    "build": "pnpm --filter @agency-os/mcp-linear build"
+    "build": "pnpm --filter @agency-os/mcp-linear build && pnpm --filter @agency-os/web build",
+    "web": "pnpm --filter @agency-os/web dev"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

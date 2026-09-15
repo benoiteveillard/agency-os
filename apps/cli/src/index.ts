@@ -3,23 +3,9 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { mkdir, writeFile } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
-import {
-  createLinearMcpClient,
-  McpLinearIssueTracker,
-} from "@agency-os/integration-linear-mcp-client";
-import { GitHubPullRequestSource } from "@agency-os/integration-github";
-import { SlackConversationSource } from "@agency-os/integration-slack";
-import { LinearIssueWriter } from "@agency-os/integration-linear-writer";
-import {
-  loadProjectRegistry,
-  type ProposedAction,
-  type AuditRecord,
-} from "@agency-os/shared";
-import {
-  investigate,
-  reviewAndExecute,
-  type AgentDependencies,
-} from "@agency-os/agent";
+import { createProductionRuntime } from "@agency-os/runtime";
+import { type ProposedAction, type AuditRecord } from "@agency-os/shared";
+import { investigate, reviewAndExecute } from "@agency-os/agent";
 import {
   Tracer,
   formatTraceTree,
@@ -44,17 +30,6 @@ const PRIORITY_VALUE_TO_LABEL: Record<number, string> = {
   3: "Medium",
   4: "Low",
 };
-
-function requireEnv(name: string): string {
-  const value = process.env[name];
-  if (!value) {
-    console.error(
-      `Missing required environment variable: ${name}. See .env.example.`,
-    );
-    process.exit(1);
-  }
-  return value;
-}
 
 function printProposedAction(action: ProposedAction): void {
   console.log("\n=== Proposed action — nothing has been written yet ===");
@@ -116,21 +91,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const anthropicApiKey = requireEnv("ANTHROPIC_API_KEY");
-  const linearApiKey = requireEnv("LINEAR_API_KEY");
-  const githubToken = requireEnv("GITHUB_TOKEN");
-  const slackBotToken = requireEnv("SLACK_BOT_TOKEN");
-  // Separate, narrowly-scoped ("Create issues") write credential — never
-  // the same key as LINEAR_API_KEY, and never passed to packages/agent or
-  // the MCP subprocess. See docs/decisions.md for why this separation is
-  // the actual safety boundary, not a runtime check.
-  const linearApiKeyWrite = requireEnv("LINEAR_API_KEY_WRITE");
-
-  // Linear reads are reached through the custom MCP server (mcp/linear),
-  // spawned as a child process over stdio; GitHub and Slack stay in-process
-  // (see docs/decisions.md for why this is deliberate incremental adoption,
-  // not inconsistency). client.close() below terminates that child process.
-  const linearMcpClient = await createLinearMcpClient({ linearApiKey });
+  const runtime = await createProductionRuntime();
 
   // Owns the whole CLI lifecycle's trace — investigation, approval, and
   // execution are one coherent tree under this single root span, not three
@@ -146,18 +107,10 @@ async function main(): Promise<void> {
 
   try {
     try {
-      const issueTracker = new McpLinearIssueTracker(linearMcpClient);
-      const deps: AgentDependencies = {
-        issueTracker,
-        pullRequestSource: new GitHubPullRequestSource(githubToken),
-        slackMessageSource: new SlackConversationSource(slackBotToken),
-        projectRegistry: loadProjectRegistry(),
-      };
-
       console.error(`Investigating: ${question}\n`);
 
-      const result = await investigate(question, deps, {
-        anthropicApiKey,
+      const result = await investigate(question, runtime.dependencies, {
+        anthropicApiKey: runtime.anthropicApiKey,
         tracer,
         parentSpan: rootSpan,
       });
@@ -174,12 +127,12 @@ async function main(): Promise<void> {
       let auditRecord: AuditRecord | undefined;
       if (result.proposedAction) {
         // reviewAndExecute is the only place in this process that touches a
-        // write-capable Linear client — constructed here, used here, never
+        // write-capable Linear client — used here, never
         // passed to anything the model's tool loop can reach.
         auditRecord = await reviewAndExecute(result.proposedAction, {
           promptForApproval,
-          issueWriter: new LinearIssueWriter(linearApiKeyWrite),
-          issueTracker,
+          issueWriter: runtime.issueWriter,
+          issueTracker: runtime.dependencies.issueTracker,
           tracer,
           parentSpan: rootSpan,
         });
@@ -209,7 +162,7 @@ async function main(): Promise<void> {
         rootSpan.setAttribute(key, value);
       }
     } finally {
-      await linearMcpClient.close();
+      await runtime.close();
     }
   } catch (err) {
     runStatus = "error";

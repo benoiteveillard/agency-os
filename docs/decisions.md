@@ -1166,3 +1166,36 @@ retry-reliability finding above is picked up as its own dedicated cycle
 before/after — not a guess), or when the web app phase needs to decide how
 `Assessment` renders in a UI (out of scope here — "no new CLI renderer
 yet" per Phase 7's explicit instruction).
+
+## Phase 7.2 — Hono adapter, canonical proposals and SSE
+
+**Decision.** Add `apps/web` around the unchanged production agent. Extract the
+actual CLI integration construction into `@agency-os/runtime`; both adapters
+use it, with write credentials kept outside agent dependencies. Hono and its
+Node adapter are the only new runtime framework dependencies. Build the web
+entry with the same esbuild version as the existing compiled MCP.
+
+**Context / alternatives.** Live tracer records are mutable and available
+through `getSpans()`, so a curated 50 ms polling mapper needs no agent observer
+API or second implementation. A separate HTTP approval request needs a durable
+canonical action within this process, because browser-submitted args and replayed
+writes would weaken the Phase 3 approval boundary.
+
+**Chosen approach.** Explicit DTOs omit raw evidence summaries and traces.
+Canonical proposals are immutable, expire after 15 minutes, and transition to
+`deciding` before any asynchronous work. Completed decisions replay; conflicting
+or in-flight decisions reject; failures and unconfirmed writes never execute
+again. Separate approval traces correlate via IDs rather than false parentage.
+Disconnect allows the original investigation to finish and close MCP; tracing
+runs independently of the response and optional OTLP remains best effort.
+
+**Trade-offs / revisit.** In-memory state requires a single persistent process
+(Railway V1 assumption), loses proposals on restart and cannot recover a dropped
+stream's result. Approval currently constructs fresh production dependencies,
+even for rejection. Generated presentation prose remains untrusted content, not
+a guarantee of automatic redaction. Revisit storage/cancellation/authentication
+when deployment or multi-user scope requires them. No prompts, tools, agent loop,
+assessment behavior, Phase 7.3 UI or deployment configuration changed.
+
+The exact API, event protocol, retry states and privacy limits are documented in
+[web-runtime.md](web-runtime.md).

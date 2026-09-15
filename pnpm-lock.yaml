@@ -41,24 +41,15 @@ importers:
       '@agency-os/agent':
         specifier: workspace:*
         version: link:../../packages/agent
-      '@agency-os/integration-github':
-        specifier: workspace:*
-        version: link:../../packages/integrations/github
-      '@agency-os/integration-linear-mcp-client':
-        specifier: workspace:*
-        version: link:../../packages/integrations/linear-mcp-client
-      '@agency-os/integration-linear-writer':
-        specifier: workspace:*
-        version: link:../../packages/integrations/linear-writer
-      '@agency-os/integration-slack':
-        specifier: workspace:*
-        version: link:../../packages/integrations/slack
       '@agency-os/observability':
         specifier: workspace:*
         version: link:../../packages/observability
       '@agency-os/observability-otel-export':
         specifier: workspace:*
         version: link:../../packages/observability-otel-export
+      '@agency-os/runtime':
+        specifier: workspace:*
+        version: link:../../packages/runtime
       '@agency-os/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -95,6 +86,37 @@ importers:
       dotenv:
         specifier: 17.4.2
         version: 17.4.2
+
+  apps/web:
+    dependencies:
+      '@agency-os/agent':
+        specifier: workspace:*
+        version: link:../../packages/agent
+      '@agency-os/observability':
+        specifier: workspace:*
+        version: link:../../packages/observability
+      '@agency-os/observability-otel-export':
+        specifier: workspace:*
+        version: link:../../packages/observability-otel-export
+      '@agency-os/runtime':
+        specifier: workspace:*
+        version: link:../../packages/runtime
+      '@agency-os/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+      '@hono/node-server':
+        specifier: 2.1.1
+        version: 2.1.1(hono@4.13.7)
+      dotenv:
+        specifier: 17.4.2
+        version: 17.4.2
+      hono:
+        specifier: 4.13.7
+        version: 4.13.7
+    devDependencies:
+      esbuild:
+        specifier: 0.28.2
+        version: 0.28.2
 
   mcp/linear:
     dependencies:
@@ -192,6 +214,27 @@ importers:
       '@opentelemetry/sdk-trace':
         specifier: 2.11.0
         version: 2.11.0(@opentelemetry/api@1.9.1)
+
+  packages/runtime:
+    dependencies:
+      '@agency-os/agent':
+        specifier: workspace:*
+        version: link:../agent
+      '@agency-os/integration-github':
+        specifier: workspace:*
+        version: link:../integrations/github
+      '@agency-os/integration-linear-mcp-client':
+        specifier: workspace:*
+        version: link:../integrations/linear-mcp-client
+      '@agency-os/integration-linear-writer':
+        specifier: workspace:*
+        version: link:../integrations/linear-writer
+      '@agency-os/integration-slack':
+        specifier: workspace:*
+        version: link:../integrations/slack
+      '@agency-os/shared':
+        specifier: workspace:*
+        version: link:../shared
 
   packages/shared: {}
 
