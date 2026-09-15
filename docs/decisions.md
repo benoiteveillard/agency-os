@@ -918,3 +918,98 @@ own privacy check, since AI Gateway logs raw prompts/completions by
 default) — or when Grafana's Agent Observability product's schema
 requirements are worth adopting for the richer conversation-level view
 noted above.
+
+---
+
+## Precompiling the Linear MCP server (Phase 7.0)
+
+**Context.** Phase 7's Cloudflare-vs-Railway deployment research (see the
+"MCP as a real subprocess" entry above) landed on Railway as the Phase 7 V1
+target, with Cloudflare Workers + Containers documented as a considered
+alternative, not implemented. That research also surfaced a concrete,
+independent action item regardless of host: the production path should
+never depend on `tsx` transpiling `mcp/linear/src/server.ts` at spawn time.
+On Cloudflare Containers this would have been a correctness risk (fresh,
+ephemeral disk on every restart re-pays transpilation); on Railway it's
+"only" a startup-latency cost paid once per deploy — but a real production
+process still has no business depending on a dev-time transpiler being
+present, fast, or even installed. Fixed as an isolated pre-web-app step.
+
+**What changed.** `mcp/linear` gained a `build` script
+(`esbuild src/server.ts --bundle --platform=node --format=esm
+--target=es2022 --outfile=dist/server.js`) and `esbuild` as an explicit
+devDependency, pinned to the version already resolved transitively via
+`tsx`/`vite` in this repo's lockfile (0.28.2) — not a new tool, just an
+existing, already-trusted (`onlyBuiltDependencies`) one made a direct
+dependency of the one package that now invokes its CLI directly. The
+bundle is **fully self-contained**: `@agency-os/integration-linear` (a
+workspace package whose `exports` field points at unbuilt `.ts` source,
+same as every other package in this monorepo — see the "Monorepo, no
+build step" entry) and all npm dependencies (`@modelcontextprotocol/sdk`,
+`zod`, `@linear/sdk`, `graphql`) are bundled in, not left external. This
+was the deciding factor over a plain `tsc` compile: `tsc` alone would only
+move the transpilation problem one hop, since Node still can't execute
+`@agency-os/integration-linear`'s `.ts` entrypoint without a loader, and
+`@linear/sdk` isn't a direct dependency of `mcp/linear` — under pnpm's
+strict, non-hoisted `node_modules`, an external reference to it wouldn't
+even resolve from `mcp/linear/dist/`. No native bindings exist anywhere in
+this dependency graph, so full bundling is safe.
+
+**Runtime selection is explicit, not environment-inferred.**
+`createLinearMcpClient` (in
+`packages/integrations/linear-mcp-client/src/create-client.ts`) now reads
+`LINEAR_MCP_SERVER_ENTRY`: unset (the default — every existing caller:
+`apps/cli`, `apps/eval-runner`, tests) spawns `tsx` against the TS source
+exactly as before, zero behavior change. Set, it spawns `node` directly
+against the named compiled entrypoint, with no `--import tsx` at all. This
+is deliberately an explicit env var rather than a `NODE_ENV` check — the
+same pattern this repo already uses for `OTEL_EXPORT_ENABLED` — so a
+deploy environment opts in by naming a real file, rather than the code
+guessing "production" from an ambient signal. The existing
+`serverEntryPath` option (used by tests/alternate layouts) is untouched
+and still always runs under `tsx`; the two mechanisms are orthogonal.
+
+**Measured result — and an honest correction to the earlier estimate.**
+The ~28s cold-start figure recorded in the "MCP as a real subprocess"
+entry above could **not be reproduced** in the current repository state:
+after clearing `tsx`'s on-disk transform cache
+(`$TMPDIR/tsx-<uid>`) to force a genuinely cold run, `tsx`-spawned
+startup (spawn → first successful `listTools()` call) measured ~250–270ms
+across 4 samples — not ~28s. The dependency graph or environment this was
+originally measured against evidently differed from today's; per
+instruction, this discrepancy is reported rather than papered over. What
+_is_ reproducible: spawning the precompiled `dist/server.js` directly
+measured ~75–83ms across 4 samples (mean 77ms) — a real, consistent
+**~70% reduction** (~3.3x) over the current `tsx` baseline, and, more to
+the point, it eliminates `tsx` from the production spawn path entirely,
+which was the actual deployment-readiness invariant at stake, independent
+of the exact magnitude. A real Linear operation (`listTools()`, then a
+full live `pnpm ask` investigation and a live `--connectivity` check
+against real Linear/GitHub/Slack/Anthropic) was verified working through
+the compiled path.
+
+**Why stdio MCP itself is unchanged.** This was a build/spawn-path fix,
+not an MCP redesign. The protocol, the transport (stdio), the tool
+surface, and `LinearIssueTracker`/`McpLinearIssueTracker`'s behavior are
+untouched — confirmed by the full existing test suite (124/124) passing
+unmodified and a live investigation producing evidence, injection
+resistance, and an approval flow indistinguishable from the pre-change
+baseline.
+
+**Deployment implications.** Railway remains the Phase 7 V1 target: a
+production `pnpm install --frozen-lockfile && pnpm build && pnpm start`
+sequence (the last step still to be wired up in the actual web app phase)
+now has a real `pnpm build` to run before `start`, producing
+`mcp/linear/dist/server.js` ahead of any request. Setting
+`LINEAR_MCP_SERVER_ENTRY` to that path in the deploy environment is what
+actually activates the compiled path — not yet done, since Railway
+configuration itself is still out of scope for this step. Cloudflare
+Workers + Containers remains documented, not implemented, as a future
+alternative if a Cloudflare deployment becomes a real requirement; this
+change also directly derisks that path's specific concern (a Container's
+ephemeral, wiped-on-restart disk repeatedly re-paying a transpilation
+cost), independent of whether that path is ever taken.
+
+**Revisit when:** the web app phase wires `LINEAR_MCP_SERVER_ENTRY` into
+actual Railway deploy configuration, or if a future integration adds a
+second MCP server that should follow the same precompiled pattern.

@@ -7,9 +7,15 @@
     ".": "./src/index.ts"
   },
   "types": "./src/index.ts",
+  "scripts": {
+    "build": "esbuild src/server.ts --bundle --platform=node --format=esm --target=es2022 --outfile=dist/server.js --sourcemap"
+  },
   "dependencies": {
     "@agency-os/integration-linear": "workspace:*",
     "@modelcontextprotocol/sdk": "1.30.0",
     "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
   }
 }

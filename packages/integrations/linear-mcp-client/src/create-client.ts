@@ -18,6 +18,29 @@ export interface CreateLinearMcpClientOptions {
 }
 
 /**
+ * Resolves the command used to spawn the MCP server. Explicit, not
+ * environment-inferred: dev/test always runs the TS source under tsx
+ * (unchanged, zero cost to that workflow) unless LINEAR_MCP_SERVER_ENTRY
+ * names a precompiled entrypoint (e.g. mcp/linear/dist/server.js, built via
+ * `pnpm build` — see mcp/linear/package.json), in which case Node runs it
+ * directly. A deployed production process sets this var and never invokes
+ * tsx. See docs/decisions.md for the measured cold-start cost this avoids.
+ */
+function resolveServerLaunch(serverEntryPath?: string): {
+  command: string;
+  args: string[];
+} {
+  const compiledEntry = process.env.LINEAR_MCP_SERVER_ENTRY;
+  if (compiledEntry) {
+    return { command: process.execPath, args: [compiledEntry] };
+  }
+  return {
+    command: process.execPath,
+    args: ["--import", "tsx", serverEntryPath ?? DEFAULT_SERVER_ENTRY],
+  };
+}
+
+/**
  * Spawns the custom Linear MCP server as a child process over stdio and
  * returns a connected client. The transport's default environment is a
  * fixed safe allowlist (PATH, HOME, etc.) that does NOT include arbitrary
@@ -31,9 +54,10 @@ export interface CreateLinearMcpClientOptions {
 export async function createLinearMcpClient(
   options: CreateLinearMcpClientOptions,
 ): Promise<Client> {
+  const { command, args } = resolveServerLaunch(options.serverEntryPath);
   const transport = new StdioClientTransport({
-    command: process.execPath,
-    args: ["--import", "tsx", options.serverEntryPath ?? DEFAULT_SERVER_ENTRY],
+    command,
+    args,
     env: {
       ...getDefaultEnvironment(),
       LINEAR_API_KEY: options.linearApiKey,

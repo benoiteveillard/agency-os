@@ -8,7 +8,8 @@
     "lint": "eslint .",
     "format": "prettier --check .",
     "test": "vitest run",
-    "ask": "pnpm --filter @agency-os/cli start --"
+    "ask": "pnpm --filter @agency-os/cli start --",
+    "build": "pnpm --filter @agency-os/mcp-linear build"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
