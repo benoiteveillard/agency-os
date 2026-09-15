@@ -20,7 +20,14 @@ import { buildSystemPrompt } from "./prompts.js";
 import { toolCallAttributes } from "./trace-attributes.js";
 
 const DEFAULT_MODEL = "claude-sonnet-5";
-const MAX_TOKENS = 4096;
+// 4096 -> 6144 (+50%, not the default-guess 8192): margin against the part
+// the "don't restate the investigation before calling propose_linear_issue"
+// prompt fix (prompts.ts) doesn't reach — a richer investigation's
+// description field is still open-ended. See docs/decisions.md and
+// evals/scenarios/19_action_proposal_no_truncation.json, whose golden-trace
+// sibling (max_tokens_safe_failure) intentionally keeps testing the
+// historical 4096 failure regardless of this value.
+const MAX_TOKENS = 6144;
 // Safety cap on the tool-use loop so a confused model can't run forever.
 const MAX_TOOL_TURNS = 8;
 

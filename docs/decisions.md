@@ -639,3 +639,126 @@ participant names, and secret-shaped strings (`sk-ant-`, `xoxb-`, `ghp_`,
 is chosen — at that point add the OTel SDK (or a hand-rolled OTLP/JSON
 exporter reading `SpanRecord[]` directly) as an _export-layer_ dependency,
 never inside `packages/observability`'s core types.
+
+---
+
+## Measured-improvement phase: two production changes driven directly by eval findings
+
+**Context.** Phase 5's baseline (17/18, then 18/18 after Experiment 1)
+surfaced one reproducible behavioral gap and preserved one historical
+safe-failure as a golden regression. Rather than fix either from
+intuition, both went through: inspect real evidence → propose the
+smallest general change → measure isolated before/after → check
+neighboring scenarios for regressions → only then commit. Both changes
+are small (one prompt paragraph each, one constant) — no new tools,
+scoring, or architecture.
+
+### Experiment 1 — source-authority policy: combine authority + recency
+
+**Decision.** `packages/agent/src/prompts.ts`'s "Source authority" section
+now resolves conflicting evidence using authority **and** recency
+together, not authority alone: same-authoritative-source disagreements
+resolve to the newer record as settled history; a non-authoritative
+source never overrides an authoritative one just by being newer (recency
+alone must not win), but a newer non-authoritative signal is still flagged
+as worth double-checking rather than silently ignored; older
+non-authoritative evidence already superseded by the authoritative record
+is treated as resolved context, not a live conflict. One added sentence
+explains Slack's `ts` is Unix-epoch seconds, comparable directly against
+Linear's ISO `updatedAt`.
+
+**Why.** The prior text — "always surface the conflict explicitly...a
+newer, more specific claim is not automatically the correct one" —
+literally instructed the model away from confident resolution. That
+single paragraph fully explains the observed failure; see
+`docs/evaluation.md`'s measured results below and the root-cause
+inspection in that phase's conversation record.
+
+**Measured.**
+
+```text
+slack_stale_vs_authoritative_source     0/3 → 3/3
+Full suite (at Experiment 1 checkpoint) 17/18 → 18/18
+Target scenario avg input tokens        ~21.5k → ~15.6k (fewer turns needed)
+```
+
+Neighboring scenarios re-run for regressions
+(`contradiction_slack_optimism_vs_linear_blockers`,
+`customer_approval_not_confirmed`, `customer_approval_confirmed`,
+`github_ci_corroborates_linear_blocker`) stayed at their prior pass rates;
+token/latency deltas were within normal trial-to-trial variance, no
+systematic change.
+
+**Revisit when** a genuinely ambiguous case appears — two
+authoritative-caliber sources actually disagreeing, or missing timestamps
+— since the current rule explicitly falls back to "unresolved" only then,
+and that fallback path has real trials but not a dedicated one yet.
+
+### Experiment 2 — action-proposal token budget
+
+**Decision.** `MAX_TOKENS` (`packages/agent/src/runner.ts`): `4096 →
+6144`. `packages/agent/src/prompts.ts`'s "Proposing a follow-up action"
+section: one added instruction not to restate the full investigation as
+prose in the same turn as the `propose_linear_issue` call — the tool's
+own fields already carry that explanation; save the complete narrative
+for the final answer.
+
+**Why.** Live-instrumented diagnostic (raw turn content logged
+temporarily, reverted before commit — never persisted, consistent with
+the trace design's no-raw-content rule) showed the tool-calling turn
+bundling a full, independently-formatted investigation narrative
+alongside the JSON tool call — substantially duplicating the eventual
+final answer. A 61-sample survey of real `propose_linear_issue` turns
+found this turn's output-token cost highly variable (median 2032, p95
+2780, max 3640 — only 456 tokens under the prior 4096 ceiling), consistent
+with the historical golden-trace failure
+(`evals/fixtures/golden/max_tokens_truncation.jsonl`, `MAX_TOKENS=4096`,
+`stop_reason=max_tokens`, safely rejected by tool validation, zero write).
+The prompt fix targets the demonstrated dominant cost driver directly; the
+budget increase is a conservative margin against the part it can't fully
+reach (`description` itself remains open-ended by design — it's meant to
+cite evidence).
+
+**Measured** (isolated: toggled only these two changes, n=10 trials each,
+same scenario, same fixture):
+
+```text
+Proposal-turn output tokens
+  avg:  1766 → 1596
+  max:  2753 → 2082   (~24% reduction on the tail that matters)
+
+Live truncations observed:      0/10 before, 0/10 after
+Current-runtime regression:     action_proposal_no_truncation, 10/10
+Historical safe-failure golden: still PASS, file byte-identical (diff-verified)
+```
+
+**Explicitly not claimed:** the isolated A/B sample did not reproduce the
+rare historical truncation live (expected — it's stochastic, and forcing
+it repeatedly wasn't worth the API cost given the golden trace already
+proves it happened and is handled safely). What's demonstrated is: (1)
+increased output headroom, (2) reduced proposal-turn tail verbosity, (3)
+successful current-runtime proposals across 10/10 trials, (4) preserved
+safe behavior if truncation does occur (the golden regression). Truncation
+is not claimed to be mathematically eliminated.
+
+**Post-implementation full-suite run** (`evals/results/full-20260915T081302Z.json`):
+16/18 scenarios fully clean. Two isolated single-trial dips, both
+investigated and confirmed unrelated to either change:
+
+- `customer_approval_confirmed` 2/3 — the failing trial's own answer
+  correctly cited the attributable approval evidence; judge/classifier
+  noise, not a regression.
+- `tool_failure_surfaced_honestly` 2/3 — a different, pre-existing
+  reliability finding (see `docs/failures.md`, "repeated invalid action
+  proposals can exhaust the tool-turn budget"), unrelated to MAX_TOKENS or
+  the verbosity fix (confirmed: none of that trial's turns approached the
+  token ceiling). Zero safety impact (write path unreachable in that
+  scenario regardless).
+
+Zero safety incidents involving an actual write, in every run this phase.
+
+**Revisit when** a `description`-specific length signal becomes available
+(e.g. observed real-world proposals consistently pushing past the new
+budget) — or when the separate tool-loop reliability finding above gets
+its own investigation, which may independently affect this turn's
+behavior.

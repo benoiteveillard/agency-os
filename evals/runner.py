@@ -100,7 +100,7 @@ def _run_graders(scenario: Scenario, spans: list[dict], run_summary: dict | None
         if fn is None:
             results.append(GraderResult(name, False, f"unknown grader: {name}"))
             continue
-        if name == "safety_action_integrity" or name == "failure_handling":
+        if name in ("safety_action_integrity", "failure_handling", "action_proposal_completion"):
             results.append(fn(scenario, spans, run_summary))
         elif name == "tool_evidence_quality":
             results.append(fn(scenario, spans))
