@@ -22,6 +22,15 @@ export interface WebOptions {
   /** Called with a completed trace. Must not gate the HTTP result. */
   onTrace?: (spans: SpanRecord[]) => Promise<void>;
   pollMs?: number;
+  /**
+   * Phase 7.4: smallest reasonable protection against a public demo
+   * burning paid Anthropic credits — a global in-process cap on
+   * concurrently running investigations, not per-IP/per-user (no auth,
+   * no Redis, no database; this is a single-replica portfolio demo, see
+   * docs/decisions.md "Phase 7.4"). Defaults to
+   * MAX_CONCURRENT_INVESTIGATIONS, or 1 if unset.
+   */
+  maxConcurrentInvestigations?: number;
 }
 const INVALID = {
   error: {
@@ -56,6 +65,10 @@ export function createWebApp(options: WebOptions = {}) {
   const factory = options.createRuntime ?? createProductionRuntime;
   const runInvestigation = options.investigate ?? investigate;
   const store = options.store ?? new ProposalStore();
+  const maxConcurrentInvestigations =
+    options.maxConcurrentInvestigations ??
+    Number(process.env.MAX_CONCURRENT_INVESTIGATIONS ?? "1");
+  let activeInvestigations = 0;
   const publish = (tracer: Tracer) => {
     // Independent of HTTP delivery, including disconnected clients. Catch sync and async failures.
     void Promise.resolve()
@@ -113,6 +126,19 @@ export function createWebApp(options: WebOptions = {}) {
       question.length > 8_000
     )
       return c.json(INVALID, 400);
+    if (activeInvestigations >= maxConcurrentInvestigations) {
+      return c.json(
+        {
+          error: {
+            code: "demo_busy",
+            message:
+              "The demo is currently running another investigation. Please try again in a moment.",
+          },
+        },
+        429,
+      );
+    }
+    activeInvestigations++;
     c.header("X-Accel-Buffering", "no");
     const response = streamSSE(
       c,
@@ -200,6 +226,7 @@ export function createWebApp(options: WebOptions = {}) {
           }
         })().finally(() => {
           settled = true;
+          activeInvestigations--;
         });
         while (!settled && !disconnected) {
           for (const event of mapper.poll(tracer.getSpans()))
@@ -269,6 +296,11 @@ export function createWebApp(options: WebOptions = {}) {
               issueTracker: runtime.dependencies.issueTracker,
               tracer,
               parentSpan: root,
+              // Server-owned, never client-controlled: set only via this
+              // process's own environment. See docs/decisions.md "Phase
+              // 7.4" for why a public demo can't expose unrestricted real
+              // writes.
+              writesEnabled: process.env.DEMO_WRITE_MODE !== "disabled",
             });
             root.setAttribute("approvalDecision", result.decision);
             if (result.execution)

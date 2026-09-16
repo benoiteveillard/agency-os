@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { decideProposal, streamInvestigation } from "./api.js";
+import { ApiRequestError, decideProposal, streamInvestigation } from "./api.js";
 
 function sseResponse(
   blocks: { event: string; data: unknown }[],
@@ -55,7 +55,7 @@ describe("streamInvestigation", () => {
     );
   });
 
-  it("throws when the response is not ok", async () => {
+  it("throws when the response is not ok, falling back to a generic message with no body", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => new Response(null, { status: 500 })),
@@ -65,6 +65,38 @@ describe("streamInvestigation", () => {
         // drain
       }
     }).rejects.toThrow(/500/);
+  });
+
+  it("surfaces the server's own error code/message on a 429 (e.g. demo_busy)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              error: {
+                code: "demo_busy",
+                message:
+                  "The demo is currently running another investigation. Please try again in a moment.",
+              },
+            }),
+            { status: 429 },
+          ),
+      ),
+    );
+    let caught: unknown;
+    try {
+      for await (const _ of streamInvestigation("q")) {
+        // drain
+      }
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ApiRequestError);
+    expect((caught as ApiRequestError).code).toBe("demo_busy");
+    expect((caught as ApiRequestError).message).toContain(
+      "running another investigation",
+    );
   });
 });
 

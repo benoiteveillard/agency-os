@@ -122,6 +122,13 @@ function DecidedStatus({ audit }: { audit: AuditDTO }) {
       </p>
     );
   }
+  if (outcome === "execution_disabled") {
+    return (
+      <p className="proposal-status proposal-status--disabled">
+        Approval recorded. External execution is disabled in the public demo.
+      </p>
+    );
+  }
   return (
     <p className="proposal-status proposal-status--failure">
       Approved, but the action was not confirmed. It will not be retried

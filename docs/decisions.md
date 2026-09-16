@@ -1828,3 +1828,142 @@ Phase 7.1 "(b)" empty-parallel-duplicate pathology is exactly this kind
 of gap); or if a future capability needs Option B's narrative+assessment
 single-call shape for other reasons, at which point the desk-research
 findings above are the starting point, not a fresh investigation.
+
+## Phase 7.4 — Railway production deployment: threat model changes, prepared not yet live
+
+**Context.** V1 deployment to Railway. Explicit instruction not to
+redesign the application or touch agent/prompt/tool/eval behavior unless
+deployment revealed an actual correctness bug. It did — several, all
+fixed; see below. The full operational reference (build/start commands,
+env var checklist, single-replica limitation) is
+[railway.md](railway.md); this entry covers the _why_.
+
+**Real bugs found by actually inspecting production assumptions, not
+assumed:**
+
+1. **`pnpm-lock.yaml` drift** (`concurrently` specifier mismatch against
+   `apps/web/package.json`) — pre-existing, not introduced this phase.
+   `pnpm install --frozen-lockfile` (Railway/Nixpacks' default,
+   reproducible-build behavior) failed outright. Fixed by regenerating
+   the lockfile (`pnpm install`, one line changed) and re-verified
+   `--frozen-lockfile` passes clean.
+2. **Server defaults to binding `127.0.0.1`**
+   (`apps/web/src/index.ts:hostname`) — correct, deliberate for local
+   dev (don't expose a dev server to the LAN by accident), silently
+   fatal on Railway: a loopback-only bind means the build succeeds, the
+   health check can even pass (Railway's health check may reach it via
+   the same loopback path depending on how it's proxied — not verified
+   either way), and **zero real internet traffic ever reaches the
+   process**, a failure mode with no obvious error message. Not changed
+   in code — the existing `HOST` env var override already covers this
+   correctly; instead documented as a **required** Railway variable
+   (`HOST=0.0.0.0`) with an explicit warning in railway.md, since editing
+   the default would change already-working local dev behavior for a
+   platform-specific concern config already solves.
+3. **`LINEAR_MCP_SERVER_ENTRY` path-guessing risk.** The Phase 7.0/7.3.1
+   mechanism (env var pointing at the precompiled `mcp/linear/dist/server.js`)
+   requires knowing the deployed filesystem's absolute mount point —
+   exactly the kind of platform-specific assumption Section 1 of this
+   phase's brief warned not to make ("do not assume the local filesystem
+   layout is identical without checking"). Rather than guess Railway's
+   convention (commonly `/app`, but not guaranteed, and not something
+   this session can verify without an actual deploy), `apps/web/src/index.ts`
+   now **self-computes** the path the same `repoRoot`-relative way it
+   already computes the static client directory, only when the env var
+   isn't already explicitly set. Correct under any mount point,
+   local or Railway, without platform-specific configuration.
+   Live-verified locally: `pnpm start` from a clean repo root, zero
+   manual env vars, both a GitHub-only and a Linear-heavy real
+   investigation completed successfully (the latter produced a full
+   `high_risk` assessment with 2 grounded blockers).
+
+**Public write-safety: the threat Section 5 asked to check for was
+real.** Traced `POST /api/proposals/:id/decide` end to end
+(`apps/web/src/app.ts` → `packages/agent/src/approval.ts`): any visitor
+who runs an investigation and gets back a `proposalId` can call this
+endpoint with `{"decision":"approve"}` directly (no auth, no ownership
+check — by design, matching the existing "no user accounts" scope) and
+`reviewAndExecute` unconditionally calls the real `IssueWriter`, creating
+a real Linear issue. Confirmed this would be live on any public Railway
+URL with default configuration — stopped before deploying, per Section
+5's explicit instruction.
+
+**Fix — server-owned `DEMO_WRITE_MODE`, not a client-controlled flag.**
+`ReviewAndExecuteDeps` (`packages/agent/src/approval.ts`) gains an
+optional `writesEnabled?: boolean` (default `true` when unset — CLI's own
+call site never passes it, so local/CLI real-write behavior is
+byte-identical to before). `apps/web/src/app.ts`'s `/decide` handler
+reads `process.env.DEMO_WRITE_MODE !== "disabled"` and passes it through
+— read once, server-side, from this process's own environment;
+**nothing in the request body or any client-supplied value can influence
+it**. When `false`, `reviewAndExecute` still runs the full approval
+recording (a human genuinely did approve — that stays true and is
+recorded as such) but returns a new, honest `execution.outcome:
+"execution_disabled"` immediately after the `approval.decision` span,
+_before_ the digest check and _without ever calling_ `issueWriter.createIssue`
+or `issueTracker.getIssue`. Distinct from `"failure"` (nothing was
+attempted, nothing went wrong) and from `"success"`/`"executed_unconfirmed"`
+(no write, so no ambiguity about whether one happened). UI
+(`ProposalCard.tsx`): "Approval recorded. External execution is disabled
+in the public demo." — never claims a Linear issue was created. This is
+the single enforcement point unchanged: `reviewAndExecute` remains "the
+only function in this codebase that can call `IssueWriter.createIssue`"
+(the pre-existing code comment is still literally true), now with one
+more reason it might decline to.
+
+**Abuse protection — global in-process concurrency cap, not enterprise
+auth.** `createWebApp` gains `maxConcurrentInvestigations` (default from
+`MAX_CONCURRENT_INVESTIGATIONS`, or `1`) and a closure-scoped counter.
+`POST /api/investigate` checks it _before_ incrementing and _before_
+`streamSSE` starts — an excess request gets `429
+{error:{code:"demo_busy"}}` synchronously, **never reaching
+`investigate()`, never calling Anthropic**. The counter decrements in the
+same `finally` that already existed for `settled`. Explicitly not
+per-IP/per-user (no auth, no Redis, no database, one process) — chosen
+because it's the smallest mechanism that actually prevents the stated
+threat ("visitor/script → 100 simultaneous investigations → large bill")
+on a single-user portfolio demo; a slow sequential drip from one abusive
+visitor is not addressed and is reported as a known limitation, not
+hidden. Client (`api.ts`/`useInvestigation.ts`/`ErrorState.tsx`): the
+server's own `{code, message}` now survives a pre-stream rejection
+instead of being collapsed into the generic "Connection interrupted"
+transport message — `demo_busy` gets its own honest "The demo is busy"
+UI state.
+
+**Regression gate.** Typecheck/lint/format: clean. Tests: **226/226**
+(was 216; +10 focused — 4 for `writesEnabled` in `approval.test.ts`
+covering the honest-record/no-call/digest-bypass/CLI-default-unchanged
+cases, 3 for `DEMO_WRITE_MODE` in `app.test.ts`, 2 for the concurrency
+cap, 1 for `demo_busy` surfacing through `api.ts`). One pre-existing test
+("isolates simultaneous investigations and their trace IDs") needed
+`maxConcurrentInvestigations: 2` added to its own setup — it tests trace
+isolation between concurrent runs, an orthogonal property to the new
+default cap, not a behavior this phase changed. Eval smoke: **9/9**, zero
+safety incidents. Full suite not rerun — no agent/prompt/tool behavior
+changed (Section 17's own instruction).
+
+**Section 5/6 architecture invariants, verified not merely asserted:**
+grounding/authority/injection-resistance/approval-digest logic in
+`reviewAndExecute` is completely untouched above the new early-return;
+the concurrency gate touches only `app.ts`'s request handling, never
+`investigate()`'s internals. Both changes are purely additive server
+configuration, gated by env vars this process alone controls.
+
+**Not yet done — this phase's execution stopped here, honestly.**
+Sections 7 (SSE-in-production), 11 (Grafana from a public request), 12
+(prompt caching in the Railway runtime), 13 (compiled-MCP-from-Railway),
+15 (production smoke test), and 16 (abuse-protection live check) all
+require an actual public Railway URL. Creating the Railway
+project/service and authenticating (`railway login`) needs an
+interactive browser login this session cannot perform — confirmed via
+`railway whoami` (`Unauthorized`). Per this phase's own Section 19: STOP
+here, hand the user the exact minimal steps, and continue verification
+once a deployed URL exists. See the chat response for those steps.
+
+**Revisit when:** a second replica is ever considered (needs shared
+proposal storage first — not built); real production traffic patterns
+are known (informs whether `MAX_CONCURRENT_INVESTIGATIONS` should be
+something other than 1, and whether the concurrency cap alone is
+sufficient abuse protection); or the demo needs to distinguish "genuinely
+busy" from "one visitor holding the only slot open" with something more
+than a flat cap.

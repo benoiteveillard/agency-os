@@ -58,7 +58,16 @@ export interface AuditRecord {
   /** Present only when decision is "approved". */
   execution?: {
     startedAt: string;
-    outcome: "success" | "failure" | "executed_unconfirmed";
+    outcome:
+      | "success"
+      | "failure"
+      | "executed_unconfirmed"
+      // Phase 7.4: server-owned public-demo write policy
+      // (DEMO_WRITE_MODE=disabled) — a human genuinely approved the
+      // proposal, but this deployment refuses to perform the real
+      // external write. Distinct from "failure": nothing was attempted,
+      // nothing went wrong.
+      | "execution_disabled";
     error?: string;
     /** From reading the issue back after creation, not from the write response. */
     createdIssue?: CreatedIssueSummary;

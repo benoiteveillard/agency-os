@@ -3,6 +3,9 @@
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.26.0",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "typecheck": "tsc --noEmit && tsc --noEmit -p apps/web/client",
     "lint": "eslint .",
@@ -10,6 +13,7 @@
     "test": "vitest run",
     "ask": "pnpm --filter @agency-os/cli start --",
     "build": "pnpm --filter @agency-os/mcp-linear build && pnpm --filter @agency-os/web build",
+    "start": "node apps/web/dist/server.js",
     "web": "pnpm --filter @agency-os/web dev"
   },
   "devDependencies": {

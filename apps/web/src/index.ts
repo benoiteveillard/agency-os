@@ -23,6 +23,20 @@ const clientDir = path.join(
   "client",
 );
 config({ path: path.join(repoRoot, ".env"), quiet: true });
+// Phase 7.4: the compiled Linear MCP server's path (Phase 7.0's
+// LINEAR_MCP_SERVER_ENTRY mechanism, packages/integrations/
+// linear-mcp-client/src/create-client.ts) must not be guessed for a given
+// deployment platform's filesystem layout — self-compute it the same
+// repoRoot-relative way clientDir above already does, so it's correct
+// under any mount point (local, Railway, or otherwise) without needing
+// platform-specific configuration. Still fully overridable by an
+// explicit .env/platform value, since that's set first.
+if (!process.env.LINEAR_MCP_SERVER_ENTRY) {
+  process.env.LINEAR_MCP_SERVER_ENTRY = path.join(
+    repoRoot,
+    "mcp/linear/dist/server.js",
+  );
+}
 const port = Number(process.env.PORT ?? "3000");
 if (!Number.isInteger(port) || port < 1 || port > 65535)
   throw new Error("Invalid PORT");

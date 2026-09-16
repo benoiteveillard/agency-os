@@ -732,6 +732,9 @@ a {
 .proposal-status--unconfirmed {
   color: var(--color-at-risk-fg);
 }
+.proposal-status--disabled {
+  color: var(--color-text-muted);
+}
 
 /* --- Narrative --------------------------------------------------- */
 

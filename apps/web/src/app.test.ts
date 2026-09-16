@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { investigate } from "@agency-os/agent";
 import type { ProductionRuntime } from "@agency-os/runtime";
 import {
@@ -249,6 +249,9 @@ describe("investigation transport", () => {
       createRuntime: factory,
       investigate: run,
       pollMs: 1,
+      // This test is about trace isolation between concurrent runs, not
+      // the Phase 7.4 concurrency cap (default 1) — needs headroom for 2.
+      maxConcurrentInvestigations: 2,
     });
     const responses = await Promise.all([
       app.request(post("/api/investigate", { question: "a" })),
@@ -281,6 +284,103 @@ describe("investigation transport", () => {
       200,
     );
     expect(rt.createIssue).not.toHaveBeenCalled();
+  });
+});
+
+describe("concurrency cap (Phase 7.4 public-demo abuse protection)", () => {
+  it("rejects an excess concurrent investigation with 429 demo_busy, no SSE stream, no model call", async () => {
+    const gate = deferred<InvestigationResult>();
+    const run = vi.fn<typeof investigate>().mockReturnValue(gate.promise);
+    const app = createWebApp({
+      createRuntime: async () => runtime().value,
+      investigate: run,
+      pollMs: 1,
+      maxConcurrentInvestigations: 1,
+    });
+
+    const first = app.request(post("/api/investigate", { question: "a" }));
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(1));
+
+    const second = await app.request(
+      post("/api/investigate", { question: "b" }),
+    );
+
+    expect(second.status).toBe(429);
+    expect(second.headers.get("content-type")).toContain("application/json");
+    expect(await second.json()).toEqual({
+      error: { code: "demo_busy", message: expect.any(String) },
+    });
+    expect(run).toHaveBeenCalledTimes(1); // the excess request never reached investigate()
+
+    gate.resolve(result());
+    expect((await first).status).toBe(200);
+  });
+
+  it("accepts a new investigation once the previous one has finished", async () => {
+    const { app, run } = setup();
+    run.mockResolvedValue(result());
+
+    // Drain the full stream so the counter's finally() has actually run —
+    // app.request() alone only resolves once headers are ready, not once
+    // the SSE body (and its cleanup) has finished.
+    await (
+      await app.request(post("/api/investigate", { question: "a" }))
+    ).text();
+    const secondResponse = await app.request(
+      post("/api/investigate", { question: "b" }),
+    );
+    expect(secondResponse.status).toBe(200);
+    await secondResponse.text();
+
+    expect(run).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("DEMO_WRITE_MODE=disabled (Phase 7.4 public-demo write policy)", () => {
+  const originalEnv = process.env.DEMO_WRITE_MODE;
+  afterEach(() => {
+    if (originalEnv === undefined) delete process.env.DEMO_WRITE_MODE;
+    else process.env.DEMO_WRITE_MODE = originalEnv;
+  });
+
+  it("records approval honestly but never calls the real issueWriter", async () => {
+    process.env.DEMO_WRITE_MODE = "disabled";
+    const { app, store, rt } = setup();
+    store.insert(action(), "trace-original");
+
+    const response = await app.request(decide("proposal-1", "approve"));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      decision: "approved",
+      execution: { outcome: "execution_disabled" },
+    });
+    expect(rt.createIssue).not.toHaveBeenCalled();
+    expect(rt.getIssue).not.toHaveBeenCalled();
+  });
+
+  it("still rejects normally — only the approve+write path is affected", async () => {
+    process.env.DEMO_WRITE_MODE = "disabled";
+    const { app, store, rt } = setup();
+    store.insert(action(), "trace-original");
+
+    const response = await app.request(decide("proposal-1", "reject"));
+
+    expect(await response.json()).toMatchObject({ decision: "rejected" });
+    expect(rt.createIssue).not.toHaveBeenCalled();
+  });
+
+  it("any value other than the literal string 'disabled' leaves real writes enabled", async () => {
+    process.env.DEMO_WRITE_MODE = "enabled";
+    const { app, store, rt } = setup();
+    store.insert(action(), "trace-original");
+
+    const response = await app.request(decide("proposal-1", "approve"));
+
+    expect(await response.json()).toMatchObject({
+      execution: { outcome: "success" },
+    });
+    expect(rt.createIssue).toHaveBeenCalledOnce();
   });
 });
 

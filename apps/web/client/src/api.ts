@@ -1,6 +1,20 @@
 import type { ApiError, AuditDTO, SSEMessage } from "./types.js";
 
 /**
+ * Carries the server's own {code, message} (e.g. "demo_busy") through to
+ * the UI, rather than collapsing every pre-stream failure into one generic
+ * transport message — see useInvestigation.ts and ErrorState.tsx.
+ */
+export class ApiRequestError extends Error {
+  constructor(
+    public readonly code: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+/**
  * The backend's SSE endpoint requires a POST body (the question), so the
  * browser's native EventSource (GET-only) can't be used. Parses the same
  * "event: x\ndata: y\n\n" framing apps/web/src/app.ts writes, incrementally
@@ -17,7 +31,27 @@ export async function* streamInvestigation(
     signal,
   });
   if (!response.ok || !response.body) {
-    throw new Error(`Investigation request failed (${response.status})`);
+    let apiError: ApiError | undefined;
+    try {
+      const body: unknown = await response.clone().json();
+      if (
+        body &&
+        typeof body === "object" &&
+        "error" in body &&
+        body.error &&
+        typeof body.error === "object" &&
+        "code" in body.error &&
+        "message" in body.error
+      ) {
+        apiError = body.error as ApiError;
+      }
+    } catch {
+      // Non-JSON or empty body — fall through to the generic message below.
+    }
+    throw new ApiRequestError(
+      apiError?.code ?? "network_error",
+      apiError?.message ?? `Investigation request failed (${response.status})`,
+    );
   }
   const reader = response.body.getReader();
   const decoder = new TextDecoder();

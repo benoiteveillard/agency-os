@@ -21,6 +21,15 @@ export interface ReviewAndExecuteDeps {
   /** Same trace as investigate() — see apps/cli/src/index.ts, which owns both the tracer and the agent.run root span passed as parentSpan. */
   tracer: Tracer;
   parentSpan: Span;
+  /**
+   * Server-owned public-demo write policy (Phase 7.4). Defaults to true —
+   * only apps/web sets this from DEMO_WRITE_MODE, never from any
+   * client-supplied value. When false, an approval is still recorded
+   * honestly (the human really did approve it) but issueWriter.createIssue
+   * is never called — this is the one place that gate is enforced, same
+   * as the digest check below.
+   */
+  writesEnabled?: boolean;
 }
 
 /**
@@ -65,6 +74,20 @@ export async function reviewAndExecute(
     parent: deps.parentSpan,
     attributes: { proposalId: action.id, kind: action.kind },
   });
+
+  if (deps.writesEnabled === false) {
+    executeSpan.setAttribute("outcome", "execution_disabled");
+    executeSpan.end("ok");
+    return {
+      ...base,
+      decision: "approved",
+      decidedAt,
+      execution: {
+        startedAt: new Date().toISOString(),
+        outcome: "execution_disabled",
+      },
+    };
+  }
 
   // The actual "what was approved === what is executed" check: recompute
   // the digest from exactly what's about to run and refuse on any

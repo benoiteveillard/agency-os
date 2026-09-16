@@ -144,4 +144,58 @@ describe("reviewAndExecute", () => {
     // The write DID happen — this must not be reported as a plain failure.
     expect(deps.issueWriter.createIssue).toHaveBeenCalled();
   });
+
+  // Phase 7.4: public-demo write policy (DEMO_WRITE_MODE=disabled).
+  describe("writesEnabled: false", () => {
+    it("records a genuine approval but never calls issueWriter", async () => {
+      const deps = makeDeps({ writesEnabled: false });
+
+      const record = await reviewAndExecute(makeAction(), deps);
+
+      expect(record.decision).toBe("approved");
+      expect(record.execution?.outcome).toBe("execution_disabled");
+      expect(record.execution?.createdIssue).toBeUndefined();
+      expect(record.execution?.error).toBeUndefined();
+      expect(deps.issueWriter.createIssue).not.toHaveBeenCalled();
+      expect(deps.issueTracker.getIssue).not.toHaveBeenCalled();
+    });
+
+    it("still refuses on rejection exactly as when writes are enabled", async () => {
+      const deps = makeDeps({
+        writesEnabled: false,
+        promptForApproval: vi.fn(async () => false),
+      });
+
+      const record = await reviewAndExecute(makeAction(), deps);
+
+      expect(record.decision).toBe("rejected");
+      expect(record.execution).toBeUndefined();
+      expect(deps.issueWriter.createIssue).not.toHaveBeenCalled();
+    });
+
+    it("does not compute or check the approval digest before short-circuiting", async () => {
+      // Tampered args would normally be caught by the digest check inside
+      // the execute path — with writes disabled, execution never reaches
+      // that check at all, since no write can happen either way.
+      const tamperedAction = makeAction({
+        args: { ...args, title: "TAMPERED TITLE" },
+      });
+      const deps = makeDeps({ writesEnabled: false });
+
+      const record = await reviewAndExecute(tamperedAction, deps);
+
+      expect(record.execution?.outcome).toBe("execution_disabled");
+      expect(deps.issueWriter.createIssue).not.toHaveBeenCalled();
+    });
+
+    it("defaults to writes enabled when unset (CLI/local behavior unchanged)", async () => {
+      const deps = makeDeps();
+      expect(deps.writesEnabled).toBeUndefined();
+
+      const record = await reviewAndExecute(makeAction(), deps);
+
+      expect(record.execution?.outcome).toBe("success");
+      expect(deps.issueWriter.createIssue).toHaveBeenCalled();
+    });
+  });
 });

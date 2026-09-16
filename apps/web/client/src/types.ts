@@ -79,7 +79,8 @@ export interface AuditDTO {
   decision: "approved" | "rejected";
   decidedAt: string;
   execution?: {
-    outcome: "success" | "failure" | "executed_unconfirmed";
+    outcome:
+      "success" | "failure" | "executed_unconfirmed" | "execution_disabled";
     error?: ApiError;
     createdIssue?: CreatedIssueSummary;
   };

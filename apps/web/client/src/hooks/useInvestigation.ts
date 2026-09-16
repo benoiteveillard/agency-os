@@ -1,5 +1,5 @@
 import { useCallback, useReducer, useRef } from "react";
-import { streamInvestigation } from "../api.js";
+import { ApiRequestError, streamInvestigation } from "../api.js";
 import type {
   ApiError,
   InvestigationResultDTO,
@@ -194,13 +194,13 @@ export function useInvestigation() {
       dispatch({
         type: "transportError",
         runId,
-        error: {
-          code: "network_error",
-          message:
-            error instanceof Error
-              ? "Connection to the server was interrupted."
-              : "Investigation failed.",
-        },
+        error:
+          error instanceof ApiRequestError
+            ? { code: error.code, message: error.message }
+            : {
+                code: "network_error",
+                message: "Connection to the server was interrupted.",
+              },
       });
     }
   }, []);
