@@ -12,3 +12,4 @@ evals/runs/
 evals/results/
 evals/__pycache__/
 **/__pycache__/
+.gstack/
