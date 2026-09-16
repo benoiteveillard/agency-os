@@ -2049,3 +2049,11 @@ long-term, since the sequential-abuse gap above is real and
 unaddressed — a lightweight cooldown or access token (both already named
 as options in this phase's own brief) would be the natural next step,
 not attempted here per "do not start another optimization phase."
+
+## UI refresh after Phase 7.4
+
+The project workspace now uses the available width instead of a single-project sidebar and a narrow stack of cards. The question composer contracts once an investigation starts; completed results place blockers beside verification needs and the proposed action on desktop, with a single-column mobile layout. Technical run metadata remains available under a native disclosure. Native evidence lists, blocker headings, keyboard focus styles, a skip link and a completion announcement improve navigation.
+
+Progress labels now distinguish checking, checked and failed sources. Initial source labels describe project data sources rather than implying a verified connection. Approval copy accounts for disabled external execution. A review also found that retrying a `proposal_in_progress` response always submitted approval, including after rejection: the client now retains and retries the original decision, with regressions for both choices. No runtime, transport, approval policy or integration changes were made.
+
+Validation uses the deterministic suite and isolated local browser fixtures, with no live agent calls. The fixture server and its sample data are not part of the application build. Desktop and narrow viewport rendering were inspected locally. This change does not publish the disabled public Railway endpoint.

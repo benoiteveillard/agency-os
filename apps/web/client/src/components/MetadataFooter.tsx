@@ -27,36 +27,41 @@ export function MetadataFooter({
   }
 
   return (
-    <section className="metadata" aria-label="Investigation details">
-      <dl className="metadata__item">
-        <dt>Duration</dt>
-        <dd>{(metadata.durationMs / 1000).toFixed(1)}s</dd>
-      </dl>
-      <dl className="metadata__item">
-        <dt>Tool calls</dt>
-        <dd>{metadata.toolCallCount}</dd>
-      </dl>
-      {inputTokens && (
+    <details className="run-details">
+      <summary>
+        Investigation details <span>Duration, usage & trace</span>
+      </summary>
+      <section className="metadata" aria-label="Investigation details">
         <dl className="metadata__item">
-          <dt>Input tokens</dt>
-          <dd>{inputTokens}</dd>
+          <dt>Duration</dt>
+          <dd>{(metadata.durationMs / 1000).toFixed(1)}s</dd>
         </dl>
-      )}
-      {outputTokens && (
         <dl className="metadata__item">
-          <dt>Output tokens</dt>
-          <dd>{outputTokens}</dd>
+          <dt>Tool calls</dt>
+          <dd>{metadata.toolCallCount}</dd>
         </dl>
-      )}
-      <div className="metadata__trace">
-        <dl className="metadata__item">
-          <dt>Trace</dt>
-          <dd>{metadata.traceId}</dd>
-        </dl>
-        <button type="button" className="copy-btn" onClick={copyTraceId}>
-          {copied ? "Copied" : "Copy"}
-        </button>
-      </div>
-    </section>
+        {inputTokens && (
+          <dl className="metadata__item">
+            <dt>Input tokens</dt>
+            <dd>{inputTokens}</dd>
+          </dl>
+        )}
+        {outputTokens && (
+          <dl className="metadata__item">
+            <dt>Output tokens</dt>
+            <dd>{outputTokens}</dd>
+          </dl>
+        )}
+        <div className="metadata__trace">
+          <dl className="metadata__item">
+            <dt>Trace</dt>
+            <dd>{metadata.traceId}</dd>
+          </dl>
+          <button type="button" className="copy-btn" onClick={copyTraceId}>
+            {copied ? "Copied" : "Copy"}
+          </button>
+        </div>
+      </section>
+    </details>
   );
 }

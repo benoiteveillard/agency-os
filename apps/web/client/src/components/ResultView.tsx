@@ -21,28 +21,38 @@ export function ResultView({
 
   return (
     <div className="result">
-      <SourcesChecked activities={activities} />
+      <div className="result-heading">
+        <h2>Investigation brief</h2>
+        <SourcesChecked activities={activities} />
+      </div>
 
       {result.assessment && <VerdictBanner assessment={result.assessment} />}
 
-      {result.assessment && result.assessment.blockers.length > 0 && (
-        <BlockerList
-          blockers={result.assessment.blockers}
-          evidenceById={evidenceById}
-        />
-      )}
+      <div className="result-columns">
+        <div className="result-primary">
+          {result.assessment && result.assessment.blockers.length > 0 && (
+            <BlockerList
+              blockers={result.assessment.blockers}
+              evidenceById={evidenceById}
+            />
+          )}
 
-      {result.assessment?.uncertainty &&
-        result.assessment.uncertainty.length > 0 && (
-          <UncertaintyList items={result.assessment.uncertainty} />
+          <NarrativeAnswer answer={result.answer} />
+        </div>
+        {(Boolean(result.assessment?.uncertainty?.length) ||
+          result.proposedActionPresentation) && (
+          <aside className="result-secondary" aria-label="Follow-up">
+            {result.assessment?.uncertainty &&
+              result.assessment.uncertainty.length > 0 && (
+                <UncertaintyList items={result.assessment.uncertainty} />
+              )}
+
+            {result.proposedActionPresentation && (
+              <ProposalCard proposal={result.proposedActionPresentation} />
+            )}
+          </aside>
         )}
-
-      {result.proposedActionPresentation && (
-        <ProposalCard proposal={result.proposedActionPresentation} />
-      )}
-
-      <NarrativeAnswer answer={result.answer} />
-
+      </div>
       <MetadataFooter metadata={result.metadata} />
     </div>
   );

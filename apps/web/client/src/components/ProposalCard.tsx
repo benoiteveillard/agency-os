@@ -34,9 +34,9 @@ export function ProposalCard({ proposal }: { proposal: ProposalPresentation }) {
       </h3>
       <p className="proposal-card__description">{proposal.description}</p>
       <p className="proposal-card__disclaimer">
-        Priority: {PRIORITY_LABEL[proposal.priority] ?? proposal.priority}. The
-        agent can create this follow-up in Linear, but requires your approval
-        first — it cannot execute this on its own.
+        Priority: {PRIORITY_LABEL[proposal.priority] ?? proposal.priority}. Your
+        approval is required before any Linear write. In the public demo,
+        approval may be recorded without execution.
       </p>
 
       {state.phase === "pending" || state.phase === "deciding" ? (
@@ -71,7 +71,7 @@ export function ProposalCard({ proposal }: { proposal: ProposalPresentation }) {
             <button
               type="button"
               className="btn btn-ghost"
-              onClick={() => decide("approve")}
+              onClick={() => decide(state.decision)}
             >
               Retry
             </button>

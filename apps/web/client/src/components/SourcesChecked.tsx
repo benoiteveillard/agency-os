@@ -22,7 +22,12 @@ export function SourcesChecked({ activities }: { activities: Activity[] }) {
               className={`sources-checked__item${checked ? " sources-checked__item--checked" : ""}`}
               key={activity.source}
             >
-              {LABEL[activity.source]} {checked ? "✓" : "…"}
+              {LABEL[activity.source]}{" "}
+              {checked
+                ? "✓"
+                : activity.ok === false
+                  ? "— check failed"
+                  : "— incomplete"}
             </span>
           );
         })}

@@ -38,11 +38,7 @@ function EvidenceChip({
       </a>
     );
   }
-  return (
-    <span className="evidence-chip" role="listitem">
-      {content}
-    </span>
-  );
+  return <span className="evidence-chip">{content}</span>;
 }
 
 export function BlockerList({
@@ -65,18 +61,19 @@ export function BlockerList({
               {String(index + 1).padStart(2, "0")}
             </span>
             <div>
-              <p className="blocker__title">{blocker.title}</p>
+              <h4 className="blocker__title">{blocker.title}</h4>
               <p className="blocker__explanation">{blocker.explanation}</p>
-              <div className="evidence-chips" role="list">
+              <ul className="evidence-chips" aria-label="Supporting evidence">
                 {blocker.sources.map((ref, refIndex) => (
-                  <EvidenceChip
-                    key={`${ref.evidenceId}-${refIndex}`}
-                    evidenceId={ref.evidenceId}
-                    role={ref.role}
-                    evidence={evidenceById.get(ref.evidenceId)}
-                  />
+                  <li key={`${ref.evidenceId}-${refIndex}`}>
+                    <EvidenceChip
+                      evidenceId={ref.evidenceId}
+                      role={ref.role}
+                      evidence={evidenceById.get(ref.evidenceId)}
+                    />
+                  </li>
                 ))}
-              </div>
+              </ul>
             </div>
           </li>
         ))}

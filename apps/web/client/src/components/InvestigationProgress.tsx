@@ -1,9 +1,9 @@
 import type { Activity } from "../hooks/useInvestigation.js";
 
 const SOURCE_LABEL: Record<string, { label: string; hint: string }> = {
-  linear: { label: "Linear", hint: "Project issues checked" },
-  github: { label: "GitHub", hint: "Pull requests & CI checked" },
-  slack: { label: "Slack", hint: "Gathering project context" },
+  linear: { label: "Linear", hint: "Project issues" },
+  github: { label: "GitHub", hint: "Pull requests & CI" },
+  slack: { label: "Slack", hint: "Project conversations" },
 };
 
 function icon(status: Activity["status"], ok?: boolean) {
@@ -21,14 +21,16 @@ export function InvestigationProgress({
 }: {
   activities: Activity[];
 }) {
-  if (activities.length === 0) return null;
   return (
     <section
       className="progress"
       aria-live="polite"
       aria-label="Investigation progress"
     >
-      <p className="progress__title">Investigating launch readiness</p>
+      <p className="progress__title">Investigating your question</p>
+      {activities.length === 0 && (
+        <p className="progress-item__hint">Waiting for the first activity…</p>
+      )}
       <ul className="progress-list">
         {activities.map((activity, index) => {
           const cls = statusClass(
@@ -41,7 +43,7 @@ export function InvestigationProgress({
               : "Assessing launch readiness";
           const hint =
             activity.kind === "source"
-              ? SOURCE_LABEL[activity.source]?.hint
+              ? `${activity.status === "in_progress" ? "Checking" : activity.ok === false ? "Could not check" : "Checked"} ${SOURCE_LABEL[activity.source]?.hint.toLowerCase()}`
               : undefined;
           return (
             <li
@@ -64,8 +66,12 @@ export function InvestigationProgress({
                 ) : null}
               </span>
               <span className="visually-hidden">
-                {activity.status === "done" ? "done" : "in progress"}, position{" "}
-                {index + 1} of {activities.length}
+                {cls === "failed"
+                  ? "failed"
+                  : activity.status === "done"
+                    ? "done"
+                    : "in progress"}
+                , position {index + 1} of {activities.length}
               </span>
             </li>
           );

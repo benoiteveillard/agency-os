@@ -1,5 +1,4 @@
 import { Header } from "./components/Header.js";
-import { Sidebar } from "./components/Sidebar.js";
 import { Disclosure } from "./components/Disclosure.js";
 import { ProjectContext } from "./components/ProjectContext.js";
 import { InvestigationProgress } from "./components/InvestigationProgress.js";
@@ -14,17 +13,25 @@ export function App() {
 
   return (
     <div className="app-shell">
+      <a className="skip-link" href="#main-content">
+        Skip to content
+      </a>
       <Header />
       <div className="app-body">
-        <Sidebar />
-        <main className="app-main">
-          <Disclosure />
+        <main id="main-content" className={`app-main app-main--${state.phase}`}>
           <ProjectContext
             onAsk={(question) => run(question)}
             disabled={running}
+            compact={state.phase !== "idle"}
           />
 
-          {(state.phase === "running" || state.phase === "failed") && (
+          <p className="visually-hidden" role="status">
+            {state.phase === "completed"
+              ? "Investigation complete. Your brief is ready below."
+              : ""}
+          </p>
+          {(state.phase === "running" ||
+            (state.phase === "failed" && state.activities.length > 0)) && (
             <InvestigationProgress activities={state.activities} />
           )}
 
@@ -43,7 +50,8 @@ export function App() {
             />
           )}
 
-          <HowItWorks />
+          {state.phase === "idle" && <HowItWorks />}
+          <Disclosure />
         </main>
       </div>
     </div>
