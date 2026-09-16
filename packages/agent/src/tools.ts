@@ -213,10 +213,17 @@ export const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "submit_assessment",
+    // Phase 7.3.2: guarantees server-side schema validation on this tool's
+    // input, eliminating the dominant malformed-`blockers`-shape failure
+    // found in Phase 7.3.1 (measured 10/10 first-attempt valid vs ~12-20%
+    // before — see docs/decisions.md). Requires additionalProperties:false
+    // on every object level below, or the API rejects the request outright.
+    strict: true,
     description:
       'Submit a structured, machine-readable project-risk assessment for this investigation. This performs no external I/O and does not create, propose, or execute anything — it only records a structured summary of the conclusion you\'ve already reached, alongside your normal narrative answer. Use this only for questions about overall project delivery/launch readiness (e.g. "are we on track to launch X", "what\'s the risk on X") — not for narrower questions about one specific piece of evidence (e.g. the CI status of one PR, one Slack thread). Every source you cite must be an evidenceId already returned by one of your own tool calls this investigation (format: "<source>:<id>", e.g. "linear:JUS-24", "github:#12", "slack:1726142400.000100") — inventing one will be rejected. Only one assessment is allowed per investigation.',
     input_schema: {
       type: "object",
+      additionalProperties: false,
       properties: {
         verdict: {
           type: "string",
@@ -235,6 +242,7 @@ export const TOOLS: Anthropic.Tool[] = [
             "Concrete unresolved issues supporting the verdict. Empty array if none (e.g. for on_track).",
           items: {
             type: "object",
+            additionalProperties: false,
             properties: {
               title: { type: "string" },
               explanation: { type: "string" },
@@ -243,6 +251,7 @@ export const TOOLS: Anthropic.Tool[] = [
                 description: "At least one evidenceId backing this blocker.",
                 items: {
                   type: "object",
+                  additionalProperties: false,
                   properties: {
                     evidenceId: {
                       type: "string",

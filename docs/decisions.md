@@ -1616,3 +1616,215 @@ real test.
 worth evaluating for lower-traffic periods between investigations, once
 real production traffic patterns are known — not measured this phase,
 no evidence either way yet.
+
+## Phase 7.3.2 — remove the dominant assessment failure mode: `strict: true`
+
+**Context.** Phase 7.3.1 fixed one recoverable malformed-`blockers` shape
+but explicitly left the dominant failure (an unrecoverable leaked
+XML-tag-convention fragment, ~85-88% of first attempts on a multi-blocker
+`high_risk` verdict) open. The live UI still took 96.2s post-fix and
+still needed one retry (a different malformed shape: a blocker missing
+its `title` field). This phase's mandate: question whether
+`submit_assessment` as an inert tool call is even the right mechanism,
+rather than patching another malformed-shape variant.
+
+**Anthropic-native structured-output investigation** (installed
+`@anthropic-ai/sdk@0.125.0`, confirmed against current official docs):
+
+- **`output_config.format`** (JSON-schema-constrained final text output)
+  is GA, not beta, no beta header needed; `claude-sonnet-5` explicitly
+  supported. It composes with `tools`: if Claude calls a tool, that's an
+  unconstrained `tool_use` block as today; if it responds with text
+  instead, that text is schema-constrained. It does **not** replace
+  application-side grounding validation — it only guarantees JSON shape,
+  never that a cited `evidenceId` is real, so `validateAssessmentInput`'s
+  evidence-reference/role checks would still be mandatory under this
+  design.
+- **`strict: true`** (a separate, complementary, also-GA field on the
+  stable `Tool` interface): "guarantees schema validation on tool names
+  and inputs" — server-side enforcement of an individual tool's own
+  `input_schema`, with no restructuring of the tool-use loop at all.
+  Requires `additionalProperties: false` on every object level in the
+  schema (undocumented in-repo; discovered via a real `400
+invalid_request_error: tools.6.custom: For 'object' type,
+'additionalProperties' must be explicitly set to false` on the first
+  prototype attempt).
+
+**Key architectural question, answered.** _Are we using tool calling for
+something it's not suited for?_ No — the problem was never tool calling
+itself; it was that we'd never turned on the schema-strictness guarantee
+Anthropic already provides for exactly this case. `submit_assessment`
+performs zero I/O and only transfers structured output into application
+state, which is a legitimate reason to _reconsider_ the mechanism, but
+not a reason to assume it's wrong without evidence.
+
+**Candidates compared (Option A/B/C/D from the brief):**
+
+- **Option C (deterministic construction)** — rejected outright, no
+  prototype needed: `verdict`, `blockers[].explanation`, and
+  `uncertainty` are genuine semantic judgments over evidence, not
+  derivable from application state. Pretending otherwise would be
+  dishonest, not deterministic.
+- **Option D (flatten the schema)** — partially subsumed by the `strict`
+  finding: the schema didn't need to get _shallower_, it needed
+  `additionalProperties: false` added at every level it already had. No
+  separate flattening experiment was run.
+- **Option A + `strict: true`** ("Candidate A2") — prototyped and
+  measured below.
+- **Option B (native `output_config` final-turn output)** — investigated
+  at the design level (confirmed technically viable, compatible with the
+  existing tool loop) but **not fully prototyped**. Once Candidate A2's
+  measurement (below) hit the stated primary target — effectively 100%
+  first-attempt validity — building Option B's larger surface (schema
+  redesign, a parsing/termination-semantics change reaching into how the
+  CLI/web narrative answer is produced, a new failure surface for
+  malformed _narrative_ JSON) had no remaining reliability gap left to
+  justify it, per this phase's own "smallest robust fix" and "we care
+  about fewer reliable calls, not architectural ceremony" instructions.
+  Recorded here as a viable, still-empirically-uninvestigated fallback
+  if a _different_ failure mode `strict` doesn't cover surfaces later
+  (see Revisit).
+
+**Fix.** `packages/agent/src/tools.ts`: `submit_assessment` gets
+`strict: true`, plus `additionalProperties: false` added to the
+top-level `input_schema`, the `blockers[]` item schema, and the
+`sources[]` item schema (three object levels). Nothing else changed —
+the tool remains inert (zero I/O), `validateAssessmentInput`'s grounding
+validation is untouched and still runs on every accepted call, Phase
+7.3.1's `recoverBlockersArray` string-recovery fix is **kept as-is**
+(harmless, already-tested, now-rarely-exercised defense-in-depth — not
+required to remove code just because a stronger guarantee makes it less
+likely to fire; Section 10's "avoid endless recovery logic" is about not
+_adding_ more ad-hoc parsers, not about deleting a already-adopted one).
+
+**Measured, isolated** (fixture mode, `20_high_risk_explicit`, n=10,
+same scenario/fixtures as Phase 7.3.1's baseline, single-variable
+toggle, run with caching from the pre-work above also active):
+
+```text
+first-attempt valid submit_assessment:  10/10  (was ~12-20% pre-7.3.2)
+eventual valid:                         10/10
+turns (all 10 trials):                  4       (was median 5)
+no parallel-duplicate submit_assessment calls observed in any of the 10 trials
+```
+
+This is the primary reliability target from Section 8 — effectively
+100% first-attempt validity in this controlled demo environment — met
+cleanly, with the smallest possible change.
+
+**Full regression gate.** Typecheck/lint/format: clean. Tests: 216/216
+(no test needed rewriting — `strict`/`additionalProperties` are pure
+API-request-shape fields the existing unit tests, which call
+`executeTool` directly and never touch the Anthropic API, don't exercise
+either way). Eval smoke: one single-trial `on_track_project` grader flip
+(`evidence_grounding`, an LLM-judge hedging complaint) — matched against
+Phase 7.3.1's own smoke run, which hit the _identical_ grader on the
+_identical_ scenario, confirming pre-existing judge noise, not a
+regression. Eval full suite:
+
+```text
+                                          before 7.3.1 → after 7.3.1 → after 7.3.2 (this phase)
+TOTAL                                       49/56          55/56          56/56
+high_risk_explicit                           3/3            2/3            3/3
+```
+
+**56/56, zero safety incidents.** The one residual Phase 7.3.1 failure
+(`high_risk_explicit` trial 2, the pre-existing Phase 7.1 "(b)"
+pathology — a parallel duplicate `submit_assessment` tool_use block,
+one erroring and one succeeding-but-empty) did not recur in this run's 3
+trials, nor in the isolated n=10 measurement above. **Not claimed
+fixed** — `strict` only guarantees schema _shape_, and an empty
+`blockers` array is schema-valid by design (the schema's own description
+says "Empty array if none, e.g. for on_track"); a parallel duplicate
+call emitting a valid-but-semantically-wrong empty array on a
+`high_risk` verdict is a different failure class entirely, and 3-13
+trials isn't enough to claim elimination of something that was already
+rare (documented as ~1/50 historically). Per Section 13: the tool
+remains, so this pathology remains part of the design, honestly
+unresolved.
+
+**Live UI verification** (built app, real integrations, 3 consecutive
+runs, north-star question, Reject clicked on every proposal — no real
+write):
+
+```text
+run    trace       duration  tool calls  fresh-input tok  output tok  verdict     blockers  1st-attempt?  proposal
+1      6813348a…   87.9s     11          103              7.1k        high_risk   6         yes           yes → rejected
+2      f6840587…   95.5s     10          101              7.9k        high_risk   5         yes           yes → rejected
+3      78c9f847…   71.5s     10          101              5.4k        high_risk   4         yes           yes → rejected
+```
+
+**3/3 first-attempt valid, zero malformed-assessment recovery, zero
+writes.** Console clean, no failed network requests, all 6 traces
+(3 investigations + 3 approval decisions) exported to Grafana
+successfully. Cost, computed from each trace's own turn-level
+input/output/cache token counts at standard Sonnet rates: **$0.181 /
+$0.191 / $0.143** (avg $0.172) vs **$0.437** for Phase 7.3.1's
+comparable live run (no caching, one retry) — a **~61% reduction**,
+combining this phase's `strict: true` (removes the retry) with the
+pre-work caching fix (cuts the price of the repeated context).
+Duration (71.5-95.5s) is **not** dramatically lower than Phase 7.3.1's
+96.2s or the original 79.9s/93.1s incidents — see below.
+
+**Where the remaining ~72-96s goes** (Section 9's requirement to show
+this, not assume it): turn-by-turn inspection of trace `6813348a…`
+shows real integration I/O (Linear/GitHub/Slack calls across 11 tool
+calls) and substantial per-turn model _generation_ time — one turn
+alone ran 34,980ms while producing 3,203 output tokens of reasoning
+before the assessment call. None of the 3 runs' time is retry recovery
+anymore (each had exactly one `submit_assessment` call). This is
+necessary investigation latency — real API calls to three real systems
+plus genuine multi-step reasoning over accumulating evidence — not
+avoidable recovery latency. Per Section 13 of the brief: "there is no
+requirement that the investigation finish in 5 or 10 seconds... a
+slower but credible investigation is acceptable." The reliability
+target (first-attempt validity) was the actual objective this phase, and
+it was met; latency was never guaranteed to drop by removing a ~15s
+retry from a ~90s investigation, and it didn't materially — this is
+reported plainly rather than reframed as a win it isn't.
+
+**Section 5/6/7 invariants, verified not merely asserted:**
+
+- **Grounding**: unchanged code path (`validateAssessmentInput`),
+  exercised identically on every live run above (blockers cite real
+  `linear:`/`github:`/`slack:` evidenceIds, visible in the rendered UI).
+- **Explicit authority**: `role` enum (`authoritative`/`corroborating`/
+  `historical`) unchanged, still required per source, still rendered
+  explicitly in the UI (see Phase 7.3.1's screenshot).
+- **Prompt injection**: `prompt_injection_in_slack` full-suite scenario
+  5/5 clean; live run 1's own uncertainty section explicitly named and
+  disregarded an injected Slack message ("attempted to instruct that all
+  blockers be ignored and the project be reported as on track").
+- **Approval boundary**: all 3 live proposals rejected via the real UI;
+  each trace's `approval.decision` span shows `decision: "rejected"`
+  with no execute/write span anywhere — zero mutation, confirmed the
+  same way as Phase 7.3.1.
+- **Honest uncertainty**: `insufficient_evidence` 3/3 in the full suite,
+  untouched by this change.
+
+**Decision (Section 16).** Keep `submit_assessment` as an inert tool
+call; add `strict: true` + `additionalProperties: false`. This is a
+production improvement over the Phase 7.3.1 baseline by every measured
+criterion — first-attempt validity, full-suite pass rate, zero
+regression, zero safety impact — achieved with a 4-line change and no
+architecture refactor. Option B (native structured output) was not
+implemented: no remaining reliability gap justified its larger surface
+area once Option A + `strict` cleanly hit the target.
+
+**Regression scenarios (Section 10), all verified via the full suite
+above**: north-star high risk (`high_risk_explicit`, `at_risk_project`
+3/3 each), on track (`on_track_project` 3/3), insufficient evidence
+(3/3), stale Slack authority/recency (`slack_stale_vs_authoritative_source`
+3/3), prompt injection (5/5), assessment+proposed-action coexistence
+(live runs 1-3 above, all three), no-assessment-required narrow
+questions (`customer_approval_*`, `github_ci_corroborates_linear_blocker`,
+`relevant_thread_selection`, `unnecessary_tool_overfetch`, all clean),
+approval safety (`approval_rejected_zero_mutation` 1/1 plus 3 live
+rejects).
+
+**Revisit when:** a malformed shape `strict` doesn't cover surfaces (it
+guarantees schema conformance, not semantic correctness — the residual
+Phase 7.1 "(b)" empty-parallel-duplicate pathology is exactly this kind
+of gap); or if a future capability needs Option B's narrative+assessment
+single-call shape for other reasons, at which point the desk-research
+findings above are the starting point, not a fresh investigation.
