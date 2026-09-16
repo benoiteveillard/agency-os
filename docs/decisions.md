@@ -1949,21 +1949,103 @@ the concurrency gate touches only `app.ts`'s request handling, never
 `investigate()`'s internals. Both changes are purely additive server
 configuration, gated by env vars this process alone controls.
 
-**Not yet done — this phase's execution stopped here, honestly.**
-Sections 7 (SSE-in-production), 11 (Grafana from a public request), 12
-(prompt caching in the Railway runtime), 13 (compiled-MCP-from-Railway),
-15 (production smoke test), and 16 (abuse-protection live check) all
-require an actual public Railway URL. Creating the Railway
-project/service and authenticating (`railway login`) needs an
-interactive browser login this session cannot perform — confirmed via
-`railway whoami` (`Unauthorized`). Per this phase's own Section 19: STOP
-here, hand the user the exact minimal steps, and continue verification
-once a deployed URL exists. See the chat response for those steps.
+**Deployed and live-verified**, 2026-09-16. Railway account access/login
+required the user (this session has no interactive browser auth, per
+Section 19 above) — user connected the GitHub repo directly. Two
+**additional real bugs**, findable only by actually deploying, not by
+any local check:
+
+1. **Monorepo auto-detection created 4 separate services** (one per
+   `apps/*`/`mcp/*` package Railway's Railpack builder found), not the
+   intended single service. Corrected in the Railway dashboard, not in
+   this repo: deleted the 3 extra services (`eval-runner`, `cli`,
+   `mcp-linear` — none of these are meant to run as their own Railway
+   service; `mcp-linear` only ever runs as a subprocess spawned by
+   `web`), kept `web` with its Root Directory at the repo root and a
+   Custom Build Command building both `@agency-os/mcp-linear` and
+   `@agency-os/web` (Railway's auto-generated command only built `web`,
+   which would have left `mcp/linear/dist/server.js` missing at
+   runtime — caught in build config review before the first deploy
+   attempt, not after a failure).
+2. **Same-origin check false-rejected every real browser request** in
+   production (`invalid_request`/403, "Cross-origin requests are not
+   supported" — even navigating the site directly). Root cause:
+   `apps/web/src/app.ts`'s CSRF-style guard compared the browser's
+   `Origin` header against `new URL(c.req.url).origin` — but Railway's
+   edge terminates TLS and forwards to this process over plain HTTP, so
+   that computed origin's scheme is always `http`, never the `https` a
+   real browser legitimately sends. Fixed (commit `4c87f82`) by trusting
+   `X-Forwarded-Proto` for the scheme (set only by Railway's own edge —
+   nothing else can reach this process to spoof it) while keeping the
+   already-correct `Host` header. A genuinely cross-origin request is
+   still rejected identically to before (regression-tested). This
+   affects _any_ deployment behind a TLS-terminating reverse proxy, not
+   a Railway-specific quirk.
+
+A third, smaller gap (commit `f9f6d14`, found immediately before the
+above): `runInvestigation`'s catch block discarded the real error with
+zero logging, so the very first production failure (caused by bug 2)
+was undiagnosable from Railway's Deploy Logs alone — fixed to log
+category + truncated message (same sanitization already used for
+tool/execution error spans elsewhere), server-side only, public SSE
+response unchanged.
+
+**Production verification, all against the real public URL, real
+integrations:**
+
+- **SSE**: genuinely progressive, not buffered — a full event timeline
+  captured with wall-clock timestamps (`investigation.started` at
+  t+0.10s through `investigation.completed` at t+10.95s on one run,
+  14 events spread across the full duration, not delivered in a burst).
+- **Concurrency cap**: two near-simultaneous real requests → one `200`
+  (real investigation), one immediate `429 {code:"demo_busy"}`, **before**
+  it reached `investigate()` (no wasted Anthropic call on the rejected one).
+- **Grafana**: trace `8cc75cdc2e66bd4b7a4993f38a9c7995` (north-star
+  question, 61.4s, 16 spans) visible in Grafana Cloud Tempo, confirmed
+  directly by the user — `agent.run` → `model.turn`/`tool.*` span tree,
+  durations and tool names only, matching the existing privacy design
+  exactly (screenshot reviewed: no prompt/evidence/secret content in any
+  span).
+- **Prompt caching**: production runs show 101 fresh input tokens
+  (vs. ~95,900 for a comparable pre-caching run) — the pre-work commit's
+  caching is active and working identically in the Railway runtime.
+- **Compiled MCP**: `tool.linear_list_project_issues` (1.15s) succeeded
+  in the Grafana trace — the self-computed `LINEAR_MCP_SERVER_ENTRY`
+  path resolves correctly under Railway's actual container layout,
+  confirming the Section 2 fix above without needing to know Railway's
+  mount point in advance.
+- **North-star question** ("Are we still on track to launch Project
+  Acme on Friday?"): `high_risk`, 5 blockers, 3 uncertainties, all
+  sources (Linear/GitHub/Slack) checked, prompt injection present in the
+  evidence and correctly disregarded (noted in "needs verification", not
+  acted on), 10 tool calls, 101 input / 5.1k output tokens, 61.4s.
+- **Write safety**: `DEMO_WRITE_MODE=disabled` confirmed set among the
+  13 production variables; the `execution_disabled` code path itself was
+  not additionally live-clicked this phase (user chose to rely on the
+  existing 4 unit + 3 integration tests rather than spend one more live
+  investigation — a reasonable call given the abuse-surface concern
+  below).
+
+**Public exposure, addressed as a real operational concern, not
+theoretical.** Once live, the user raised exactly the risk this phase's
+Section 6 analysis anticipated and documented as a known limitation: the
+concurrency cap stops parallel abuse but not a slow, sequential
+automated drip, each real investigation costing real Anthropic spend.
+User's call: unpublish the Railway domain (Settings → Networking →
+remove the public domain) once portfolio-demo verification is complete,
+re-enabling it only when actively sharing it — a reasonable, fully
+reversible mitigation requiring no code change, consistent with this
+phase's explicit scope (no auth system, no rate-limiting infrastructure
+built).
 
 **Revisit when:** a second replica is ever considered (needs shared
 proposal storage first — not built); real production traffic patterns
 are known (informs whether `MAX_CONCURRENT_INVESTIGATIONS` should be
 something other than 1, and whether the concurrency cap alone is
-sufficient abuse protection); or the demo needs to distinguish "genuinely
+sufficient abuse protection); the demo needs to distinguish "genuinely
 busy" from "one visitor holding the only slot open" with something more
-than a flat cap.
+than a flat cap; or before ever leaving the public domain enabled
+long-term, since the sequential-abuse gap above is real and
+unaddressed — a lightweight cooldown or access token (both already named
+as options in this phase's own brief) would be the natural next step,
+not attempted here per "do not start another optimization phase."
