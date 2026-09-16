@@ -2,7 +2,12 @@ import { Hono, type Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import { bodyLimit } from "hono/body-limit";
 import { investigate, reviewAndExecute } from "@agency-os/agent";
-import { Tracer, type SpanRecord } from "@agency-os/observability";
+import {
+  categorizeError,
+  truncateErrorMessage,
+  Tracer,
+  type SpanRecord,
+} from "@agency-os/observability";
 import {
   createProductionRuntime,
   type ProductionRuntime,
@@ -208,7 +213,24 @@ export function createWebApp(options: WebOptions = {}) {
                 ? { proposedActionPresentation: presentation }
                 : {}),
             };
-          } catch {
+          } catch (err) {
+            // Sanitized the same way tool/model errors already are
+            // elsewhere (runner.ts, approval.ts) — category + truncated
+            // message only, never the raw error (which could echo
+            // provider payloads, prompts, or evidence content). Was
+            // previously silently swallowed here, which made production
+            // failures undiagnosable without live SSH/console access to
+            // the process — found running Phase 7.4's own production
+            // smoke test.
+            const message = (err as Error).message;
+            console.error(
+              JSON.stringify({
+                event: "investigation.failed",
+                traceId: tracer.traceId,
+                category: categorizeError(message),
+                message: truncateErrorMessage(message),
+              }),
+            );
             return undefined;
           } finally {
             root.end(ok ? "ok" : "error");
