@@ -101,8 +101,27 @@ export function createWebApp(options: WebOptions = {}) {
     c.header("X-Content-Type-Options", "nosniff");
     // JSON-only endpoints plus same-origin browser requests; no credentialed CORS.
     const origin = c.req.header("origin");
+    // Behind a TLS-terminating reverse proxy (Railway, and virtually every
+    // PaaS/CDN), the connection this process actually sees is plain HTTP
+    // even though the browser's real, externally-visible origin is
+    // https — c.req.url's own scheme reflects that internal hop, not
+    // what the browser sent, and comparing it directly against a real
+    // browser's Origin header always mismatches in production. The Host
+    // header itself is already correct (proxies forward it unchanged for
+    // routing). Trusting X-Forwarded-Proto here doesn't weaken this
+    // check: it's set only by Railway's own edge, which is the only path
+    // that can reach this process — nothing else is exposed to the
+    // public internet to spoof it.
+    const forwardedProto = c.req
+      .header("x-forwarded-proto")
+      ?.split(",")[0]
+      ?.trim();
+    const requestUrl = new URL(c.req.url);
+    const effectiveOrigin = forwardedProto
+      ? `${forwardedProto}://${requestUrl.host}`
+      : requestUrl.origin;
     if (
-      (origin && origin !== new URL(c.req.url).origin) ||
+      (origin && origin !== effectiveOrigin) ||
       c.req.header("sec-fetch-site") === "cross-site"
     ) {
       return c.json(

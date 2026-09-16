@@ -154,6 +154,41 @@ describe("HTTP validation", () => {
     }
     expect(factory).not.toHaveBeenCalled();
   });
+  it("accepts a same-origin request behind a TLS-terminating proxy (X-Forwarded-Proto https, raw connection http)", async () => {
+    // Reproduces the real Railway production bug: the browser's Origin is
+    // genuinely https, but this process only ever sees the proxy's plain-
+    // http connection — the check must trust X-Forwarded-Proto for the
+    // scheme, not c.req.url's own (always-http-here) scheme.
+    const { app } = setup();
+    const response = await app.request(
+      new Request("http://localhost/api/investigate", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          origin: "https://localhost",
+          "x-forwarded-proto": "https",
+        },
+        body: '{"question":"q"}',
+      }),
+    );
+    expect(response.status).not.toBe(403);
+  });
+  it("still rejects a genuinely cross-origin request even with X-Forwarded-Proto present", async () => {
+    const { app, factory } = setup();
+    const response = await app.request(
+      new Request("http://localhost/api/investigate", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          origin: "https://evil.example",
+          "x-forwarded-proto": "https",
+        },
+        body: '{"question":"q"}',
+      }),
+    );
+    expect(response.status).toBe(403);
+    expect(factory).not.toHaveBeenCalled();
+  });
   it.each([
     { decision: "yes" },
     { decision: "approve", args: { title: "tampered" } },
