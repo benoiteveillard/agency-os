@@ -298,6 +298,50 @@ function requireString(input: Record<string, unknown>, key: string): string {
 }
 
 /**
+ * Phase 7.3.1 finding: for a non-trivial `blockers` array (2+ items, each
+ * with nested `sources`), Claude sometimes emits `blockers` as a *string*
+ * instead of the required JSON array — observed in two shapes: (a) an
+ * unparseable fragment of an unrelated XML-style tool-call convention
+ * (`<parameter name="title">...`) leaking into the string, not recoverable
+ * here, and (b) a well-formed JSON-encoded array, sometimes with trailing
+ * non-JSON content appended (the same leaked `<parameter>`/`</invoke>`
+ * tags) after an otherwise-valid `]`. This recovers only case (b): it scans
+ * for the first bracket-balanced `[...]` span (respecting quoted strings)
+ * and parses just that span, ignoring anything after it. Case (a) has no
+ * balanced JSON array to find and correctly falls through unrecovered.
+ */
+function recoverBlockersArray(raw: string): unknown[] | undefined {
+  const start = raw.indexOf("[");
+  if (start === -1) return undefined;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < raw.length; i++) {
+    const ch = raw[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === "[") depth++;
+    else if (ch === "]") {
+      depth--;
+      if (depth === 0) {
+        try {
+          const parsed: unknown = JSON.parse(raw.slice(start, i + 1));
+          return Array.isArray(parsed) ? parsed : undefined;
+        } catch {
+          return undefined;
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
  * Deterministic, application-side gate: every source an assessment cites
  * must resolve to a real Evidence item already collected this
  * investigation (matched on the same `${source}:${id}` composite key
@@ -311,7 +355,7 @@ function requireString(input: Record<string, unknown>, key: string): string {
 function validateAssessmentInput(
   input: Record<string, unknown>,
   evidenceSoFar: readonly Evidence[],
-): Assessment {
+): { assessment: Assessment; blockersRecovered: boolean } {
   const verdictValue = requireString(input, "verdict");
   if (!VALID_VERDICTS.has(verdictValue as AssessmentVerdict)) {
     throw new Error(
@@ -321,8 +365,21 @@ function validateAssessmentInput(
   const verdict = verdictValue as AssessmentVerdict;
   const summary = requireString(input, "summary");
 
-  const rawBlockers = input.blockers;
+  let rawBlockers = input.blockers;
+  let blockersRecovered = false;
+  if (typeof rawBlockers === "string") {
+    const recovered = recoverBlockersArray(rawBlockers);
+    if (recovered !== undefined) {
+      rawBlockers = recovered;
+      blockersRecovered = true;
+    }
+  }
   if (!Array.isArray(rawBlockers)) {
+    if (typeof input.blockers === "string") {
+      throw new Error(
+        'Tool input has an invalid "blockers" value: got a string, not a JSON array. `blockers` must be a literal JSON array value — e.g. [{"title": ..., "explanation": ..., "sources": [...]}] — not a JSON-encoded string, and not XML-style <parameter>/<invoke> tags.',
+      );
+    }
     throw new Error('Tool input missing required array field "blockers"');
   }
 
@@ -391,7 +448,10 @@ function validateAssessmentInput(
     uncertainty = input.uncertainty as string[];
   }
 
-  return { verdict, summary, blockers, uncertainty };
+  return {
+    assessment: { verdict, summary, blockers, uncertainty },
+    blockersRecovered,
+  };
 }
 
 /**
@@ -585,7 +645,10 @@ export async function executeTool(
       // validates and records structured output to in-memory run state.
       // It never touches issueTracker/pullRequestSource/slackMessageSource,
       // never calls another model, and never triggers approval.
-      const assessment = validateAssessmentInput(input, evidenceSoFar);
+      const { assessment, blockersRecovered } = validateAssessmentInput(
+        input,
+        evidenceSoFar,
+      );
       assessmentState.current = assessment;
 
       return {
@@ -599,6 +662,7 @@ export async function executeTool(
           verdict: assessment.verdict,
           blockerCount: assessment.blockers.length,
           uncertaintyCount: assessment.uncertainty?.length ?? 0,
+          ...(blockersRecovered ? { blockersRecovered: true } : {}),
         },
       };
     }

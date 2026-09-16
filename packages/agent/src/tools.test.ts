@@ -601,4 +601,105 @@ describe("executeTool submit_assessment", () => {
       values.some((v) => typeof v === "string" && v.includes("CMS migration")),
     ).toBe(false);
   });
+
+  // Phase 7.3.1 finding: Claude sometimes emits `blockers` as a string
+  // instead of a JSON array. See docs/decisions.md "Phase 7.3.1" and
+  // recoverBlockersArray in tools.ts.
+  describe("blockers-as-string recovery (Phase 7.3.1)", () => {
+    it("recovers a clean JSON-encoded blockers string", async () => {
+      const assessmentState: AssessmentState = {};
+      const result = await executeTool(
+        "submit_assessment",
+        { ...validInput, blockers: JSON.stringify(validInput.blockers) },
+        makeThrowingDeps(),
+        {},
+        assessmentState,
+        knownEvidence,
+      );
+      expect((result.data as { status: string }).status).toBe("accepted");
+      expect(assessmentState.current?.blockers).toEqual(validInput.blockers);
+      expect(result.traceAttributes?.blockersRecovered).toBe(true);
+    });
+
+    it("recovers a JSON-encoded blockers string with trailing garbage appended (observed: leaked <parameter>/<invoke> tags)", async () => {
+      const assessmentState: AssessmentState = {};
+      const withGarbage =
+        JSON.stringify(validInput.blockers) + "</parameter>\n</invoke>\n";
+      const result = await executeTool(
+        "submit_assessment",
+        { ...validInput, blockers: withGarbage },
+        makeThrowingDeps(),
+        {},
+        assessmentState,
+        knownEvidence,
+      );
+      expect((result.data as { status: string }).status).toBe("accepted");
+      expect(assessmentState.current?.blockers).toEqual(validInput.blockers);
+      expect(result.traceAttributes?.blockersRecovered).toBe(true);
+    });
+
+    it("does not set blockersRecovered on a normal, already-array submission", async () => {
+      const result = await executeTool(
+        "submit_assessment",
+        validInput,
+        makeThrowingDeps(),
+        {},
+        {},
+        knownEvidence,
+      );
+      expect(result.traceAttributes?.blockersRecovered).toBeUndefined();
+    });
+
+    it("rejects an unrecoverable non-JSON blockers string (e.g. leaked XML-tag fragment) with a specific, corrective message", async () => {
+      await expect(
+        executeTool(
+          "submit_assessment",
+          {
+            ...validInput,
+            blockers: '\n<parameter name="title">Some blocker',
+          },
+          makeThrowingDeps(),
+          {},
+          {},
+          knownEvidence,
+        ),
+      ).rejects.toThrow(
+        /invalid "blockers" value: got a string, not a JSON array/,
+      );
+    });
+
+    it("still rejects a genuinely missing blockers field with the original generic message", async () => {
+      const { blockers: _blockers, ...withoutBlockers } = validInput;
+      await expect(
+        executeTool(
+          "submit_assessment",
+          withoutBlockers,
+          makeThrowingDeps(),
+          {},
+          {},
+          knownEvidence,
+        ),
+      ).rejects.toThrow(/missing required array field "blockers"/);
+    });
+
+    it("still applies full evidence-grounding validation to a recovered array", async () => {
+      const badBlockers = JSON.stringify([
+        {
+          title: "Fabricated blocker",
+          explanation: "...",
+          sources: [{ evidenceId: "linear:JUS-999", role: "authoritative" }],
+        },
+      ]);
+      await expect(
+        executeTool(
+          "submit_assessment",
+          { ...validInput, blockers: badBlockers },
+          makeThrowingDeps(),
+          {},
+          {},
+          knownEvidence,
+        ),
+      ).rejects.toThrow(/evidenceId\(s\) "linear:JUS-999" were not found/);
+    });
+  });
 });
