@@ -1512,3 +1512,107 @@ pre-existing Phase 7.1 "(b)" pathology (parallel duplicate
 `submit_assessment` with empty blockers) is picked up on its own, since
 it caused this phase's one residual full-suite failure and is unrelated
 to the fix here.
+
+## Phase 7.3.2 (pre-work) — prompt caching was never wired up
+
+**Context.** Mid-Phase-7.3.2, the Anthropic API credit balance was
+exhausted (confirmed via a direct, code-independent `curl` 400
+`invalid_request_error`). The user asked why — a legitimate question
+after ~2 days and $40 of credits. Rather than guess, counted actual
+recorded token usage across every local trace file
+(`.traces/*.jsonl` + `evals/runs/*.jsonl`, 601 distinct
+`agent.run` traces, 1,889 `model.turn` spans, spanning the full history
+of this repo's evals/live runs):
+
+```text
+total input tokens:   11,999,407
+total output tokens:   1,104,497
+cache_read tokens:             0
+cache_create tokens:           0
+```
+
+At standard Sonnet pricing that's ≈$36 input + ≈$16.5 output ≈ **$52.5**
+— consistent with the reported spend. Not a leak or a runaway loop: this
+is genuine agentic work (evals + live traces) driven by the reliability
+investigations across Phases 7.1–7.3.1, which explicitly called for
+repeated live trials, full eval suites, and live UI runs. But
+`cache_read`/`cache_create` being **exactly zero across all 601 traces,
+no exceptions**, is a real, separate, fully fixable structural finding:
+`packages/agent/src/runner.ts`'s `client.messages.create()` call never
+set a single `cache_control` breakpoint anywhere, on any request, ever.
+The 11:1 input:output token ratio is the signature of a multi-turn
+tool-loop agent re-sending its full system prompt, tool schemas, and
+entire growing conversation history as fresh, full-price input on every
+one of a 3-6 turn investigation's turns — the expected pattern in the
+complete absence of caching.
+
+**Fix.** Three cache breakpoints per request (Anthropic allows up to 4),
+all pure metadata additions with zero behavior change:
+
+1. **System prompt** (`runner.ts`): converted from a plain string to
+   `[{ type: "text", text: ..., cache_control: { type: "ephemeral" } }]`
+   — static per investigation, and identical across every investigation
+   sharing the same `projectRegistry`, so it's reusable across
+   completely separate investigations within the cache TTL, not just
+   within one.
+2. **Tools array** (`TOOLS_WITH_CACHE`, computed once at module scope):
+   `cache_control` set on the last tool definition — Anthropic's cache
+   boundary covers everything from the start of the request up to and
+   including the marked block, so this one marker covers system + all
+   tool schemas together.
+3. **Rolling conversation breakpoint**: at most one alive at a time,
+   moved onto the last block of the newest `tool_result` message each
+   turn via a small `moveCacheBreakpoint()` helper that clears the
+   previous marker first — required because `MAX_TOOL_TURNS` is 8 and
+   never retiring old breakpoints would exceed the 4-per-request cap.
+
+No prompt, tool schema, validation, or grounding logic changed — this is
+exclusively a caching-metadata change to the request shape.
+
+**Live-verified** (3 consecutive real fixture-mode trials, same scenario
+as Phase 7.3.1's measurement, run back-to-back within one 5-minute cache
+window):
+
+```text
+trial 1, turn 0: in=93   cache_read=0    cache_create=6117   (first write)
+trial 1, turn 1: in=2    cache_read=6117 cache_create=1130
+trial 1, turn 2: in=2    cache_read=7247 cache_create=182
+trial 1, turn 3: in=2    cache_read=7429 cache_create=1155
+trial 2, turn 0: in=93   cache_read=6117 cache_create=0      (reused across investigations)
+trial 3, turn 0: in=93   cache_read=6117 cache_create=0      (reused again)
+```
+
+Fresh per-turn input tokens dropped from thousands (turn 3 was 17,384 in
+a comparable pre-caching Phase 7.3.1 trace) to **2**, with the
+accumulated context correctly read from cache instead. Cost comparison
+against a comparable pre-caching 4-turn trial from Phase 7.3.1's own
+measurement set (`hr_trace_12.jsonl`, same fixture, same scenario, both
+using standard published Sonnet per-token rates):
+
+```text
+without caching: $0.1208
+with caching:     $0.0691
+reduction:        42.8%   (single-trial; batches of trials amortize the
+                            one-time system+tools cache write across all
+                            of them, so eval-suite-scale savings are
+                            larger than this single-trial number shows —
+                            trial 2/3's turn 0 above already shows
+                            cache_create=0, fully reusing trial 1's write)
+```
+
+**Regression gate.** Typecheck, lint, format, all 216 tests: clean —
+zero behavior change to any correctness-relevant code path. Eval smoke
+(9/9, including `max_tokens_safe_failure`'s byte-identical golden trace
+and the safety-critical injection scenario): clean, no safety incidents.
+No unit test was added for the cache-breakpoint wiring itself: this
+codebase has no existing precedent anywhere for mocking the Anthropic
+SDK client, and the project's established pattern is to verify
+model/API behavior live rather than via a mock that could silently
+misrepresent real API semantics (exactly the kind of assumption this
+finding itself warns against) — the live trace evidence above is the
+real test.
+
+**Revisit when:** a `1h` cache TTL (vs the default `5m` used here) is
+worth evaluating for lower-traffic periods between investigations, once
+real production traffic patterns are known — not measured this phase,
+no evidence either way yet.

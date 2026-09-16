@@ -21,6 +21,26 @@ import { buildSystemPrompt } from "./prompts.js";
 import { toolCallAttributes } from "./trace-attributes.js";
 
 const DEFAULT_MODEL = "claude-sonnet-5";
+const CACHE_BREAKPOINT: Anthropic.CacheControlEphemeral = { type: "ephemeral" };
+
+/**
+ * Phase 7.3.2 finding: prompt caching was never wired up anywhere in this
+ * codebase (`cacheReadInputTokens`/`cacheCreationInputTokens` were 0 across
+ * every one of 601 recorded traces) — every one of a multi-turn
+ * investigation's several tool-loop turns was re-sending the full system
+ * prompt, tool schemas, and entire growing conversation history as fresh,
+ * full-price input tokens. Marks the end of the (static, ~2 tool-call
+ * duration-independent) tools array as one of up to 4 allowed cache
+ * breakpoints per request; `TOOLS` itself is a module-level constant
+ * (tools.ts) reused across every investigate() call, so this is computed
+ * once, not per-call. Pure metadata addition — does not change what any
+ * tool does or how its input is validated.
+ */
+const TOOLS_WITH_CACHE: Anthropic.Tool[] = TOOLS.map((tool, index) =>
+  index === TOOLS.length - 1
+    ? { ...tool, cache_control: CACHE_BREAKPOINT }
+    : tool,
+);
 // 4096 -> 6144 (+50%, not the default-guess 8192): margin against the part
 // the "don't restate the investigation before calling propose_linear_issue"
 // prompt fix (prompts.ts) doesn't reach — a richer investigation's
@@ -72,7 +92,17 @@ export async function investigate(
   const client = new Anthropic({ apiKey: options.anthropicApiKey });
   const model = options.model ?? DEFAULT_MODEL;
   const { tracer, parentSpan } = options;
-  const system = buildSystemPrompt(deps.projectRegistry);
+  // Array-of-blocks form (rather than a plain string) so the system prompt
+  // itself can carry a cache breakpoint — see TOOLS_WITH_CACHE above for
+  // why this matters. Per-call, not module-level: varies with
+  // deps.projectRegistry.
+  const system: Anthropic.TextBlockParam[] = [
+    {
+      type: "text",
+      text: buildSystemPrompt(deps.projectRegistry),
+      cache_control: CACHE_BREAKPOINT,
+    },
+  ];
 
   const messages: Anthropic.MessageParam[] = [
     { role: "user", content: question },
@@ -83,6 +113,23 @@ export async function investigate(
   // is constructed once and shouldn't carry per-run mutable state.
   const proposalState: ProposalState = {};
   const assessmentState: AssessmentState = {};
+
+  // Rolling third cache breakpoint (system + tools above are the other
+  // two, both static) for the growing conversation itself: at most one
+  // alive at a time, moved onto the newest tool_result block each turn so
+  // a later turn's request re-reads everything before it from cache
+  // instead of resending the whole accumulated history at full price.
+  // Anthropic allows up to 4 breakpoints per request; never removing the
+  // previous one would grow unboundedly across MAX_TOOL_TURNS turns.
+  let cacheBreakpointBlock:
+    { cache_control?: Anthropic.CacheControlEphemeral | null } | undefined;
+  function moveCacheBreakpoint(block: {
+    cache_control?: Anthropic.CacheControlEphemeral | null;
+  }): void {
+    if (cacheBreakpointBlock) cacheBreakpointBlock.cache_control = undefined;
+    block.cache_control = CACHE_BREAKPOINT;
+    cacheBreakpointBlock = block;
+  }
 
   for (let turn = 0; turn < MAX_TOOL_TURNS; turn++) {
     const modelSpan = tracer.startSpan("model.turn", "model", {
@@ -96,7 +143,7 @@ export async function investigate(
         model,
         max_tokens: MAX_TOKENS,
         system,
-        tools: TOOLS,
+        tools: TOOLS_WITH_CACHE,
         messages,
       });
     } catch (err) {
@@ -211,6 +258,7 @@ export async function investigate(
       }
     }
 
+    moveCacheBreakpoint(toolResults[toolResults.length - 1]!);
     messages.push({ role: "user", content: toolResults });
   }
 
