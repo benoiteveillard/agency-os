@@ -18,13 +18,18 @@ local verification; public access is not an authentication boundary.
 To exercise the compiled paths locally from the repository root:
 
 ```sh
-LINEAR_MCP_SERVER_ENTRY="$PWD/mcp/linear/dist/server.js" pnpm --filter @agency-os/web start
+pnpm --filter @agency-os/web start
 ```
 
 Both run with Node, without runtime TypeScript compilation. The explicit MCP
-environment variable remains the Phase 7.0 integration contract. Development
-uses its existing tsx fallback. The web bundle includes workspace packages;
-it does not depend on their source `.ts` exports at runtime.
+environment variable remains the Phase 7.0 integration contract; as of
+Phase 7.4, `apps/web/src/index.ts` self-computes `LINEAR_MCP_SERVER_ENTRY`
+from its own runtime location (`repoRoot`-relative) when unset, so the
+command above no longer needs to set it manually — the explicit `LINEAR_MCP_SERVER_ENTRY=...`
+form above still works and takes precedence for a non-standard layout.
+Development uses its existing tsx fallback. The web bundle includes
+workspace packages; it does not depend on their source `.ts` exports at
+runtime.
 
 ## HTTP contract
 
@@ -32,6 +37,11 @@ it does not depend on their source `.ts` exports at runtime.
   provider connectivity probe.
 - `POST /api/investigate` accepts exactly `{"question": string}`. Trimmed,
   nonempty, at most 8,000 original UTF-16 code units. No client agent options.
+  Phase 7.4: rejected with `429 {error:{code:"demo_busy",message}}` when
+  `MAX_CONCURRENT_INVESTIGATIONS` (default 1) real investigations are
+  already running — checked before the SSE stream opens and before
+  `investigate()` is called, so an excess request never reaches Anthropic.
+  A global in-process counter, not per-IP/per-user.
 - `POST /api/proposals/:proposalId/decide` accepts exactly
   `{"decision":"approve"}` or `{"decision":"reject"}`.
 
@@ -41,6 +51,14 @@ unknown fields, and limit the entire body to 32 KiB. Validation failures are
 cross-origin requests are rejected with `403 invalid_request`; there is no CORS
 allowlist. Responses carry `Cache-Control: no-store`. No raw exception messages,
 provider responses, stack traces or credentials are returned.
+
+The same-origin check compares the browser's `Origin` header against this
+request's own scheme+host — behind a TLS-terminating reverse proxy (Railway
+in production; any platform with the same topology), the scheme this
+process actually sees on the raw connection is always `http`, never the
+`https` a real browser legitimately sends, so the check prefers
+`X-Forwarded-Proto` when present (Phase 7.4 — trusted only because nothing
+but the proxy's own edge can reach this process to set it).
 
 ## Streaming event contract
 
@@ -125,22 +143,31 @@ The successful response is an explicit audit projection:
 optional `createdIssue:{identifier,title,url}`, or a generic `execution_failed`
 error. It never contains action arguments, digest, or provider error bodies.
 
-| Condition                                      | HTTP response                                      |
-| ---------------------------------------------- | -------------------------------------------------- |
-| Unknown / forgotten ID                         | `404 proposal_not_found`                           |
-| Expired, retained tombstone                    | `410 proposal_expired`                             |
-| Same decision currently executing              | `409 proposal_in_progress`                         |
-| Conflicting decision                           | `409 proposal_already_decided`                     |
-| Rejected                                       | `200`, decision rejected, no execution             |
-| Approved and read-back confirmed               | `200`, execution outcome success                   |
-| Write succeeded, read-back failed              | `200`, outcome executed_unconfirmed                |
-| Execution failed / unexpected callback failure | `502`, generic execution_failed                    |
-| Same completed decision repeated               | Replay its audit response, without executing again |
+| Condition                                      | HTTP response                                                 |
+| ---------------------------------------------- | ------------------------------------------------------------- |
+| Unknown / forgotten ID                         | `404 proposal_not_found`                                      |
+| Expired, retained tombstone                    | `410 proposal_expired`                                        |
+| Same decision currently executing              | `409 proposal_in_progress`                                    |
+| Conflicting decision                           | `409 proposal_already_decided`                                |
+| Rejected                                       | `200`, decision rejected, no execution                        |
+| Approved and read-back confirmed               | `200`, execution outcome success                              |
+| Write succeeded, read-back failed              | `200`, outcome executed_unconfirmed                           |
+| Approved, public-demo writes disabled          | `200`, outcome execution_disabled, no execute/write attempted |
+| Execution failed / unexpected callback failure | `502`, generic execution_failed                               |
+| Same completed decision repeated               | Replay its audit response, without executing again            |
 
 `executed_unconfirmed` is terminal; never retry a write on this outcome. A write
 failure may itself be ambiguous, so even failures cannot be re-executed under
 that proposal. Unexpected errors before HTTP streaming use a generic
 `500 internal_error`; Hono's streaming fallback error message is sanitized too.
+
+`execution_disabled` (Phase 7.4): server-owned `DEMO_WRITE_MODE=disabled`
+env var, read once from `process.env` in `apps/web/src/app.ts`, never from
+any client-supplied value. `reviewAndExecute` still records a genuine
+approval (a human did approve) but returns this outcome immediately after
+the `approval.decision` span, before the digest check and without ever
+calling `issueWriter.createIssue`. Unset (the CLI's own call site never
+sets it), real writes behave exactly as before this phase.
 
 ## Proposal lifecycle and concurrency
 
@@ -278,9 +305,25 @@ behind a click.
 
 ### Known, unchanged, and left alone
 
-The Phase 7.1 structured-tool retry finding remains fully present and was
-observed live in this phase's own verification (below) — unfixed, per this
-phase's explicit scope. The SSE progress UI keeps the wait legible
-throughout (steady "Assessing launch readiness" indicator, all completed
+The Phase 7.1 structured-tool retry finding was present as of this phase
+(7.3) and observed live in its own verification (below) — unfixed at the
+time, per this phase's explicit scope. **Since fixed** — see "Phase 7.3.2"
+in `docs/decisions.md` (`strict: true` on `submit_assessment`'s schema,
+measured 10/10 first-attempt valid in isolation, 3/3 on live production
+runs in Phase 7.4). The SSE progress UI keeps the wait legible throughout
+regardless (steady "Assessing launch readiness" indicator, all completed
 sources shown, no fake completion) rather than hiding or timing out the
-wait, but does not shorten it.
+wait — this part is unaffected either way.
+
+## Production deployment (Phase 7.4)
+
+Full operational reference (build/start commands, environment variable
+checklist, single-replica limitation) is `docs/railway.md`; rationale for
+each production-driven decision is `docs/decisions.md` "Phase 7.4". The
+two HTTP-contract additions from that phase are folded into the tables
+above (`429 demo_busy`, `execution_disabled`) rather than duplicated here.
+Live-verified against the real deployed URL: SSE remains genuinely
+progressive behind Railway's proxy (no buffering), the compiled Linear MCP
+subprocess and prompt caching both work identically to local, and Grafana
+receives production traces with the same privacy guarantees as local runs
+— confirmed by inspecting an actual trace, not merely asserted.
