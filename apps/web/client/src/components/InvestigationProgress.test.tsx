@@ -29,13 +29,51 @@ describe("honest source progress", () => {
       </>,
     );
     expect(screen.getByText(/Could not check/)).toBeInTheDocument();
-    expect(screen.getByText(/GitHub — check failed/)).toBeInTheDocument();
+    expect(screen.getByText(/GitHub failed/)).toBeInTheDocument();
   });
   it("shows a neutral starting state before receiving any source event", () => {
     render(<InvestigationProgress activities={[]} />);
-    expect(
-      screen.getByText(/Waiting for the first activity/),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/Usually takes a minute/)).toBeInTheDocument();
     expect(screen.queryByText("Linear")).not.toBeInTheDocument();
+  });
+  it("shows nothing still running once the run has stopped", () => {
+    render(
+      <InvestigationProgress
+        stopped
+        activities={[
+          { kind: "source", source: "slack", status: "in_progress" },
+          { kind: "assessing", status: "in_progress" },
+        ]}
+      />,
+    );
+    expect(screen.getByText("Investigation stopped")).toBeInTheDocument();
+    expect(screen.getByText(/Didn.t finish checking/)).toBeInTheDocument();
+    expect(document.querySelector(".progress-item--in_progress")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
+  });
+  it("lists sources before the analysis step, whatever order they started in", () => {
+    render(
+      <InvestigationProgress
+        activities={[
+          { kind: "assessing", status: "in_progress" },
+          { kind: "source", source: "linear", status: "done", ok: true },
+        ]}
+      />,
+    );
+    const rows = [...document.querySelectorAll(".progress-item__label")];
+    expect(rows.map((row) => row.textContent)).toEqual([
+      "Linear",
+      "Weighing the evidence",
+    ]);
+  });
+  it("keeps CI capitalized in the hint", () => {
+    render(
+      <InvestigationProgress
+        activities={[
+          { kind: "source", source: "github", status: "in_progress" },
+        ]}
+      />,
+    );
+    expect(screen.getByText(/pull requests and CI/)).toBeInTheDocument();
   });
 });

@@ -6,7 +6,9 @@ import {
   type Tracer,
 } from "@agency-os/observability";
 import {
+  bounded,
   computeApprovalDigest,
+  TimeoutError,
   type ApprovalPrompt,
   type AuditRecord,
   type IssueWriter,
@@ -30,7 +32,11 @@ export interface ReviewAndExecuteDeps {
    * as the digest check below.
    */
   writesEnabled?: boolean;
+  /** Limit on the write and on its read-back. Overridable for tests. */
+  externalCallTimeoutMs?: number;
 }
+
+const EXTERNAL_CALL_TIMEOUT_MS = 30_000;
 
 /**
  * The only function in this codebase that can call IssueWriter.createIssue.
@@ -49,6 +55,7 @@ export async function reviewAndExecute(
     args: action.args,
     approvalDigest: action.approvalDigest,
     rationale: action.rationale,
+    evidenceIds: action.evidenceIds,
     proposedAt: action.proposedAt,
   };
 
@@ -56,7 +63,17 @@ export async function reviewAndExecute(
     parent: deps.parentSpan,
     attributes: { proposalId: action.id, kind: action.kind },
   });
-  const approved = await deps.promptForApproval(action);
+  let approved: boolean;
+  try {
+    approved = await deps.promptForApproval(action);
+  } catch (err) {
+    const message = (err as Error).message;
+    approvalSpan.end("error", {
+      category: categorizeError(message),
+      message: truncateErrorMessage(message),
+    });
+    throw err;
+  }
   approvalSpan.setAttribute("decision", approved ? "approved" : "rejected");
   approvalSpan.end("ok");
 
@@ -111,9 +128,13 @@ export async function reviewAndExecute(
   }
 
   const startedAt = new Date().toISOString();
+  const timeoutMs = deps.externalCallTimeoutMs ?? EXTERNAL_CALL_TIMEOUT_MS;
   let issueId: string;
   try {
-    ({ issueId } = await deps.issueWriter.createIssue(action.args));
+    ({ issueId } = await bounded(deps.issueWriter.createIssue(action.args), {
+      timeoutMs,
+      message: `Linear write timed out after ${timeoutMs}ms; it may still have taken effect.`,
+    }));
   } catch (err) {
     const message = (err as Error).message;
     executeSpan.end("error", {
@@ -126,7 +147,10 @@ export async function reviewAndExecute(
       decidedAt,
       execution: {
         startedAt,
-        outcome: "failure",
+        // A write that timed out wasn't necessarily refused: the request may
+        // have landed, so "failure" would claim more than is known.
+        outcome:
+          err instanceof TimeoutError ? "executed_unconfirmed" : "failure",
         error: message,
       },
     };
@@ -139,7 +163,10 @@ export async function reviewAndExecute(
     attributes: { issueId },
   });
   try {
-    const created = await deps.issueTracker.getIssue(issueId);
+    const created = await bounded(deps.issueTracker.getIssue(issueId), {
+      timeoutMs,
+      message: `Read-back timed out after ${timeoutMs}ms.`,
+    });
     confirmSpan.setAttribute("identifier", created.identifier);
     confirmSpan.end("ok");
     return {

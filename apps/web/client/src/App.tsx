@@ -1,59 +1,86 @@
+import { useEffect } from "react";
 import { Header } from "./components/Header.js";
-import { Disclosure } from "./components/Disclosure.js";
-import { ProjectContext } from "./components/ProjectContext.js";
+import { AskView } from "./components/AskView.js";
 import { InvestigationProgress } from "./components/InvestigationProgress.js";
 import { ResultView } from "./components/ResultView.js";
 import { ErrorState } from "./components/ErrorState.js";
-import { HowItWorks } from "./components/HowItWorks.js";
 import { useInvestigation } from "./hooks/useInvestigation.js";
 
 export function App() {
-  const { state, run } = useInvestigation();
-  const running = state.phase === "running";
+  const { state, run, reset } = useInvestigation();
+
+  // Each phase is a new view: don't leave the reader partway down the last one.
+  useEffect(() => {
+    document.documentElement.scrollTop = 0;
+  }, [state.phase]);
 
   return (
-    <div className="app-shell">
+    <>
       <a className="skip-link" href="#main-content">
         Skip to content
       </a>
       <Header />
-      <div className="app-body">
-        <main id="main-content" className={`app-main app-main--${state.phase}`}>
-          <ProjectContext
-            onAsk={(question) => run(question)}
-            disabled={running}
-            compact={state.phase !== "idle"}
-          />
+      <main id="main-content" className="page">
+        <p className="visually-hidden" role="status">
+          {state.phase === "completed"
+            ? "Investigation complete. Your brief is ready below."
+            : ""}
+        </p>
 
-          <p className="visually-hidden" role="status">
-            {state.phase === "completed"
-              ? "Investigation complete. Your brief is ready below."
-              : ""}
-          </p>
-          {(state.phase === "running" ||
-            (state.phase === "failed" && state.activities.length > 0)) && (
-            <InvestigationProgress activities={state.activities} />
-          )}
+        {state.phase === "idle" && <AskView onAsk={(q) => run(q)} />}
 
-          {state.phase === "completed" && (
-            <ResultView
-              key={state.result.metadata.traceId}
-              result={state.result}
+        {state.phase !== "idle" && (
+          <div className="question-line">
+            <p>{state.question}</p>
+            {state.phase !== "running" && (
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={reset}
+              >
+                New question
+              </button>
+            )}
+          </div>
+        )}
+
+        {state.phase === "running" && (
+          <div className="run-grid appear">
+            <div className="skeleton" aria-hidden="true">
+              <i className="skeleton__block" />
+              <i />
+              <i className="skeleton__short" />
+              <i className="skeleton__block" />
+              <i className="skeleton__block" />
+            </div>
+            <InvestigationProgress
               activities={state.activities}
+              preliminary={state.preliminary}
+              onCancel={reset}
             />
-          )}
+          </div>
+        )}
 
-          {state.phase === "failed" && (
+        {state.phase === "completed" && (
+          <ResultView
+            key={state.result.metadata.traceId}
+            result={state.result}
+            activities={state.activities}
+          />
+        )}
+
+        {state.phase === "failed" && (
+          <div className="failed appear">
             <ErrorState
               error={state.error}
               onRetry={() => run(state.question)}
             />
-          )}
-
-          {state.phase === "idle" && <HowItWorks />}
-          <Disclosure />
-        </main>
-      </div>
-    </div>
+            {state.activities.length > 0 && (
+              <InvestigationProgress activities={state.activities} stopped />
+            )}
+          </div>
+        )}
+      </main>
+    </>
   );
 }

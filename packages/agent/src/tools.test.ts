@@ -12,7 +12,7 @@ import type {
   SlackMessageSource,
   SlackMessage,
 } from "@agency-os/integration-slack";
-import type { Evidence } from "@agency-os/shared";
+import { computeApprovalDigest, type Evidence } from "@agency-os/shared";
 import {
   executeTool,
   type AgentDependencies,
@@ -126,6 +126,10 @@ function makeDeps(
   };
 }
 
+const PROPOSAL_EVIDENCE: Evidence[] = [
+  { source: "linear", id: "ACM-12", summary: "..." },
+];
+
 describe("executeTool", () => {
   it("returns issues with blocking evidence for linear_list_project_issues", async () => {
     const result = await executeTool(
@@ -139,7 +143,7 @@ describe("executeTool", () => {
       source: "linear",
       id: "ACM-12",
     });
-    expect(result.evidence[0]?.summary).toContain("OVERDUE");
+    expect(result.evidence[0]?.summary).toContain("overdue");
     expect(result.evidence[0]?.summary).toContain("blocked by ACM-9");
     expect(result.evidence[0]?.summary).toContain("blocks ACM-20");
   });
@@ -252,9 +256,12 @@ describe("executeTool", () => {
         description: "Blocks JUS-18, which blocks JUS-24 (see evidence).",
         priority: "urgent",
         rationale: "No tracking issue exists yet for this blocker.",
+        evidenceIds: ["linear:ACM-12"],
       },
       makeDeps(),
       proposalState,
+      {},
+      PROPOSAL_EVIDENCE,
     );
 
     expect(proposalState.current).toBeDefined();
@@ -283,9 +290,12 @@ describe("executeTool", () => {
         title: "Follow-up",
         description: "...",
         rationale: "...",
+        evidenceIds: ["linear:ACM-12"],
       },
       makeDeps(),
       proposalState,
+      {},
+      PROPOSAL_EVIDENCE,
     );
 
     expect(proposalState.current?.args.priority).toBe(0);
@@ -302,9 +312,12 @@ describe("executeTool", () => {
         title: "First proposal",
         description: "...",
         rationale: "...",
+        evidenceIds: ["linear:ACM-12"],
       },
       deps,
       proposalState,
+      {},
+      PROPOSAL_EVIDENCE,
     );
 
     await expect(
@@ -315,9 +328,12 @@ describe("executeTool", () => {
           title: "Second proposal",
           description: "...",
           rationale: "...",
+          evidenceIds: ["linear:ACM-12"],
         },
         deps,
         proposalState,
+        {},
+        PROPOSAL_EVIDENCE,
       ),
     ).rejects.toThrow(/A pending action already exists for this run/);
 
@@ -334,12 +350,114 @@ describe("executeTool", () => {
           title: "x",
           description: "x",
           rationale: "x",
+          evidenceIds: ["linear:ACM-12"],
           priority: "critical", // not one of the allowed enum values
         },
         makeDeps(),
         {},
+        {},
+        PROPOSAL_EVIDENCE,
       ),
     ).rejects.toThrow(/invalid "priority" value/);
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["empty", []],
+    ["not strings", [1]],
+    ["not retrieved this run", ["linear:JUS-999"]],
+  ])(
+    "rejects a proposal whose evidenceIds are %s",
+    async (_label, evidenceIds) => {
+      const proposalState: ProposalState = {};
+      await expect(
+        executeTool(
+          "propose_linear_issue",
+          {
+            projectSlug: "acme-website-migration",
+            title: "x",
+            description: "x",
+            rationale: "x",
+            evidenceIds,
+          },
+          makeDeps(),
+          proposalState,
+          {},
+          PROPOSAL_EVIDENCE,
+        ),
+      ).rejects.toThrow(/invalid "evidenceIds" value/);
+      expect(proposalState.current).toBeUndefined();
+    },
+  );
+
+  it("records the proposal's evidence and target project, outside the digest", async () => {
+    const proposalState: ProposalState = {};
+    await executeTool(
+      "propose_linear_issue",
+      {
+        projectSlug: "acme-website-migration",
+        title: "x",
+        description: "x",
+        rationale: "x",
+        evidenceIds: ["linear:ACM-12", "linear:ACM-12"],
+      },
+      makeDeps(),
+      proposalState,
+      {},
+      PROPOSAL_EVIDENCE,
+    );
+    const action = proposalState.current!;
+    expect(action.evidenceIds).toEqual(["linear:ACM-12"]);
+    expect(action.targetProjectName).toBe("Acme Website Migration");
+    expect(action.approvalDigest).toBe(
+      computeApprovalDigest("linear_create_issue", action.args),
+    );
+  });
+
+  it("links Slack evidence to the message when a workspace URL is configured", async () => {
+    const deps = makeDeps();
+    deps.projectRegistry["acme-website-migration"]!.slackWorkspaceUrl =
+      "https://acme.slack.com/";
+    const result = await executeTool(
+      "slack_get_channel_messages",
+      { projectSlug: "acme-website-migration" },
+      deps,
+    );
+    expect(result.evidence[0]!.url).toMatch(
+      /^https:\/\/acme\.slack\.com\/archives\/.+\/p1726142400000100$/,
+    );
+  });
+
+  it("links CI evidence to the failing run and dates it", async () => {
+    const deps = makeDeps();
+    deps.pullRequestSource.getWorkflowRunStatus = async () => ({
+      status: "failing",
+      runs: [
+        {
+          workflowName: "Lint",
+          status: "completed",
+          conclusion: "success",
+          url: "https://github.com/o/r/actions/runs/1",
+          updatedAt: "2026-09-10T00:00:00Z",
+        },
+        {
+          workflowName: "CI",
+          status: "completed",
+          conclusion: "failure",
+          url: "https://github.com/o/r/actions/runs/2",
+          updatedAt: "2026-09-11T00:00:00Z",
+        },
+      ],
+    });
+    const result = await executeTool(
+      "github_get_workflow_run_status",
+      { projectSlug: "acme-website-migration", ref: "abc1234def" },
+      deps,
+    );
+    expect(result.evidence[0]).toMatchObject({
+      url: "https://github.com/o/r/actions/runs/2",
+      timestamp: "2026-09-11T00:00:00Z",
+    });
   });
 
   it("rejects an unknown project slug instead of guessing", async () => {
@@ -435,22 +553,98 @@ describe("executeTool submit_assessment", () => {
     expect((result.data as { status: string }).status).toBe("accepted");
   });
 
-  it.each(["on_track", "at_risk", "high_risk", "insufficient_evidence"])(
-    "accepts verdict value %s",
-    async (verdict) => {
-      const assessmentState: AssessmentState = {};
-      const result = await executeTool(
+  it.each([
+    ["on_track", []],
+    ["at_risk", validInput.blockers],
+    ["high_risk", validInput.blockers],
+    ["insufficient_evidence", []],
+  ])("accepts verdict value %s", async (verdict, blockers) => {
+    const assessmentState: AssessmentState = {};
+    const result = await executeTool(
+      "submit_assessment",
+      { ...validInput, verdict, blockers },
+      makeThrowingDeps(),
+      {},
+      assessmentState,
+      knownEvidence,
+    );
+    expect(assessmentState.current?.verdict).toBe(verdict);
+    expect((result.data as { verdict: string }).verdict).toBe(verdict);
+  });
+
+  it("rejects a blocker with no sources, since nothing backs it", async () => {
+    await expect(
+      executeTool(
         "submit_assessment",
-        { ...validInput, verdict, blockers: [] },
+        {
+          ...validInput,
+          blockers: [{ title: "Claim", explanation: "...", sources: [] }],
+        },
         makeThrowingDeps(),
         {},
-        assessmentState,
+        {},
         knownEvidence,
-      );
-      expect(assessmentState.current?.verdict).toBe(verdict);
-      expect((result.data as { verdict: string }).verdict).toBe(verdict);
+      ),
+    ).rejects.toThrow(/invalid "blockers\[0\]\.sources" value/);
+  });
+
+  it.each(["on_track", "at_risk", "high_risk"])(
+    "rejects verdict %s when no evidence has been collected",
+    async (verdict) => {
+      await expect(
+        executeTool(
+          "submit_assessment",
+          { verdict, summary: "s", blockers: [] },
+          makeThrowingDeps(),
+          {},
+          {},
+          [],
+        ),
+      ).rejects.toThrow(/invalid "verdict" value/);
     },
   );
+
+  it("accepts insufficient_evidence with no evidence collected", async () => {
+    const assessmentState: AssessmentState = {};
+    await executeTool(
+      "submit_assessment",
+      { verdict: "insufficient_evidence", summary: "s", blockers: [] },
+      makeThrowingDeps(),
+      {},
+      assessmentState,
+      [],
+    );
+    expect(assessmentState.current?.verdict).toBe("insufficient_evidence");
+  });
+
+  it.each(["at_risk", "high_risk"])(
+    "rejects verdict %s with no blockers",
+    async (verdict) => {
+      await expect(
+        executeTool(
+          "submit_assessment",
+          { ...validInput, verdict, blockers: [] },
+          makeThrowingDeps(),
+          {},
+          {},
+          knownEvidence,
+        ),
+      ).rejects.toThrow(/invalid "blockers" value/);
+    },
+  );
+
+  it("rejects on_track while listing unresolved blockers", async () => {
+    await expect(
+      executeTool(
+        "submit_assessment",
+        { ...validInput, verdict: "on_track" },
+        makeThrowingDeps(),
+        {},
+        {},
+        knownEvidence,
+      ),
+    ).rejects.toThrow(/invalid "blockers" value/);
+  });
 
   it("rejects an invalid verdict value", async () => {
     await expect(
@@ -563,9 +757,12 @@ describe("executeTool submit_assessment", () => {
         title: "Follow-up",
         description: "...",
         rationale: "...",
+        evidenceIds: ["linear:ACM-12"],
       },
       makeDeps(),
       proposalState,
+      {},
+      PROPOSAL_EVIDENCE,
     );
     await executeTool(
       "submit_assessment",

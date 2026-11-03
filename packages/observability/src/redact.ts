@@ -25,11 +25,14 @@ const MAX_ERROR_MESSAGE_LENGTH = 200;
  * run's final answer, not to runtime categorization here.
  */
 export function categorizeError(message: string): ErrorCategory {
+  if (/^Model stopped before a complete answer/.test(message))
+    return "model_incomplete";
+  if (/timed out|exceeded its deadline/i.test(message)) return "timeout";
   if (/^Linear MCP tool/.test(message)) return "mcp_transport";
   if (/digest mismatch/i.test(message)) return "digest_mismatch";
   if (/^(Linear|GitHub|Slack):/.test(message)) return "saas_api";
   if (
-    /missing required|invalid ".*" value|^Unknown (tool|project slug)/i.test(
+    /missing required|invalid ".*" value|^Unknown (tool|project slug)|^Tool call not executed/i.test(
       message,
     )
   ) {

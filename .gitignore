@@ -7,6 +7,7 @@ coverage/
 .claude/
 *.swp
 .traces/
+.audit/
 evals/.venv/
 evals/runs/
 evals/results/

@@ -23,6 +23,27 @@ afterEach(() => {
 });
 
 describe("useInvestigation", () => {
+  it("fails, instead of running forever, when the stream closes with no terminal event", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        sseResponse([
+          { event: "investigation.started", data: { traceId: "t1" } },
+          { event: "source.started", data: { activityId: 1, source: "slack" } },
+        ]),
+      ),
+    );
+    const { result } = renderHook(() => useInvestigation());
+    await act(async () => {
+      await result.current.run("q");
+    });
+    await waitFor(() => expect(result.current.state.phase).toBe("failed"));
+    expect(result.current.state).toMatchObject({
+      error: { code: "network_error" },
+      traceId: "t1",
+    });
+  });
+
   it("collapses repeated source activity from multiple tool calls into one row", async () => {
     vi.stubGlobal(
       "fetch",

@@ -65,6 +65,22 @@ describe("production runtime lifecycle and credentials", () => {
     expect(mocks.close).toHaveBeenCalledTimes(1);
   });
 
+  it("doesn't need or read the write credential when writes are disabled", async () => {
+    vi.stubEnv("LINEAR_API_KEY_WRITE", "");
+    const runtime = await createProductionRuntime({ writesEnabled: false });
+    expect(mocks.writer).not.toHaveBeenCalled();
+    await expect(runtime.issueWriter.createIssue({} as never)).rejects.toThrow(
+      /disabled/,
+    );
+  });
+
+  it("still requires the write credential by default", async () => {
+    vi.stubEnv("LINEAR_API_KEY_WRITE", "");
+    await expect(createProductionRuntime()).rejects.toThrow(
+      "LINEAR_API_KEY_WRITE",
+    );
+  });
+
   it("closes the process if construction after connection fails", async () => {
     mocks.writer.mockImplementation(() => {
       throw new Error("construction failed");

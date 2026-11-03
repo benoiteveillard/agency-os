@@ -4,7 +4,15 @@
 Usage:
     python evals/run.py --suite smoke   # fast local feedback
     python evals/run.py --suite full    # the full configured scenario/trial suite
+    python evals/run.py --suite free    # no model calls and no API key: code invariants, golden traces, approval paths
     python evals/run.py --live          # small, read-only live integration suite
+
+Options:
+    --model <id>                        # run the agent on this model; the judge stays fixed
+
+Exit code: 0 all good, 1 a safety incident, a harness error or a failing deterministic
+scenario, 2 only agentic quality failures. Agentic trials are stochastic, so a quality miss
+deserves a look but isn't the same signal as a broken invariant.
 
 See docs/evaluation.md for the full design.
 """
@@ -30,6 +38,8 @@ RESULTS_DIR = REPO_ROOT / "evals" / "results"
 def scenarios_for_suite(scenarios: list[Scenario], suite: str) -> list[Scenario]:
     if suite == "full":
         return scenarios
+    if suite == "free":
+        return [s for s in scenarios if s.kind != "agentic"]
     # smoke: every deterministic/code-invariant/golden-trace/approval-only
     # scenario (cheap), plus only the agentic scenarios explicitly flagged
     # smoke=true — never the whole agentic set.
@@ -40,6 +50,18 @@ def trial_count_for(scenario: Scenario, suite: str) -> int:
     if suite == "smoke" and scenario.kind == "agentic":
         return 1  # smoke never repeats a semantic trial; the scenario file's configured count stays untouched
     return scenario.trials
+
+
+def exit_code_for(reports: list[ScenarioReport], safety_incidents: dict) -> int:
+    def failed(report: ScenarioReport) -> bool:
+        return not report.skipped and report.pass_count < report.trial_count
+
+    # A harness error (a bad API key, say) means nothing was measured, which is
+    # different from the agent getting something wrong.
+    harness_broke = any(not t.harness_ok for r in reports for t in r.trials)
+    if safety_incidents or harness_broke or any(failed(r) and r.scenario.kind != "agentic" for r in reports):
+        return 1
+    return 2 if any(failed(r) for r in reports) else 0
 
 
 def print_connectivity_report(conn: ConnectivityReport) -> None:
@@ -75,9 +97,10 @@ def run_live_suite() -> tuple[list[ScenarioReport], ConnectivityReport]:
 def main() -> None:
     load_dotenv()
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--suite", choices=["smoke", "full"], help="run the fixture-backed scenario suite")
+    parser.add_argument("--suite", choices=["smoke", "full", "free"], help="run the fixture-backed scenario suite")
     parser.add_argument("--live", action="store_true", help="run the small live integration suite")
     parser.add_argument("--scenario", help="run only this scenario id (fixture suites only)")
+    parser.add_argument("--model", help="run the agent on this model id (fixture suites only)")
     args = parser.parse_args()
 
     if bool(args.suite) == bool(args.live):
@@ -104,7 +127,7 @@ def main() -> None:
         for scenario in scenarios:
             trial_count = trial_count_for(scenario, suite_name)
             print(f"Running {scenario.id} ({scenario.kind}, {trial_count} trial(s))...", file=sys.stderr)
-            reports.append(run_scenario(scenario, trial_count, mode))
+            reports.append(run_scenario(scenario, trial_count, mode, args.model))
 
     usage = judge_usage()
     print()
@@ -123,7 +146,7 @@ def main() -> None:
     write_json(json_report, out_path)
     print(f"\nJSON report written to {out_path.relative_to(REPO_ROOT)}", file=sys.stderr)
 
-    sys.exit(1 if json_report["safety_incidents"] else 0)
+    sys.exit(exit_code_for(reports, json_report["safety_incidents"]))
 
 
 if __name__ == "__main__":

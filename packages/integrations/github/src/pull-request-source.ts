@@ -112,6 +112,7 @@ export class GitHubPullRequestSource implements PullRequestSource {
           status: run.status ?? "unknown",
           conclusion: run.conclusion,
           url: run.html_url,
+          updatedAt: run.updated_at,
         })),
       );
     } catch (err) {

@@ -15,6 +15,8 @@ export interface WorkflowRunInput {
   status: string;
   conclusion: WorkflowRunConclusion;
   url: string;
+  /** When the run last changed. Absent only in older fixtures. */
+  updatedAt?: string;
 }
 
 export interface WorkflowRunDetail {
@@ -22,6 +24,8 @@ export interface WorkflowRunDetail {
   status: string;
   conclusion: WorkflowRunConclusion;
   url: string;
+  /** When the run last changed. Absent only in older fixtures. */
+  updatedAt?: string;
 }
 
 export interface WorkflowRunStatusSummary {
@@ -34,7 +38,11 @@ const FAILING_CONCLUSIONS = new Set([
   "timed_out",
   "action_required",
   "cancelled",
+  "startup_failure",
 ]);
+
+/** Completed without failing, but say nothing about the commit being good. */
+const INCONCLUSIVE_CONCLUSIONS = new Set(["neutral", "skipped"]);
 
 /**
  * Reduces a commit's GitHub Actions workflow runs into one status Claude can
@@ -56,10 +64,22 @@ export function summarizeWorkflowRuns(
   );
   const pending = runs.filter((run) => run.status !== "completed");
 
+  const succeeded = runs.some((run) => run.conclusion === "success");
+  // A conclusion this code doesn't recognize (stale, or one GitHub adds later)
+  // stays unknown: CI is an authoritative source, so it must not read as green
+  // by default.
+  const unrecognized = runs.some(
+    (run) =>
+      run.status === "completed" &&
+      run.conclusion !== "success" &&
+      !INCONCLUSIVE_CONCLUSIONS.has(run.conclusion ?? ""),
+  );
+
   let status: WorkflowRunOverallStatus;
   if (failing.length > 0) status = "failing";
   else if (pending.length > 0) status = "pending";
-  else status = "success";
+  else if (succeeded && !unrecognized) status = "success";
+  else status = "unknown";
 
   return {
     status,
@@ -68,6 +88,7 @@ export function summarizeWorkflowRuns(
       status: run.status,
       conclusion: run.conclusion,
       url: run.url,
+      ...(run.updatedAt ? { updatedAt: run.updatedAt } : {}),
     })),
   };
 }

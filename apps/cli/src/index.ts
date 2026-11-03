@@ -3,7 +3,10 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { mkdir, writeFile } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
-import { createProductionRuntime } from "@agency-os/runtime";
+import {
+  createFileAuditLog,
+  createProductionRuntime,
+} from "@agency-os/runtime";
 import { type ProposedAction, type AuditRecord } from "@agency-os/shared";
 import { investigate, reviewAndExecute } from "@agency-os/agent";
 import {
@@ -42,6 +45,7 @@ function printProposedAction(action: ProposedAction): void {
   console.log(`Linear team: ${action.args.teamId}`);
   console.log(`Linear project: ${action.args.projectId}`);
   console.log(`Rationale: ${action.rationale}`);
+  console.log(`Evidence: ${action.evidenceIds.join(", ")}`);
   console.log(`Proposal ID: ${action.id}`);
   console.log(`Approval digest: ${action.approvalDigest}`);
 }
@@ -92,6 +96,12 @@ async function main(): Promise<void> {
   }
 
   const runtime = await createProductionRuntime();
+  const auditLog = createFileAuditLog(
+    path.join(
+      process.env.AGENCY_DATA_DIR ?? repoRoot,
+      ".audit/decisions.jsonl",
+    ),
+  );
 
   // Owns the whole CLI lifecycle's trace — investigation, approval, and
   // execution are one coherent tree under this single root span, not three
@@ -129,14 +139,37 @@ async function main(): Promise<void> {
         // reviewAndExecute is the only place in this process that touches a
         // write-capable Linear client — used here, never
         // passed to anything the model's tool loop can reach.
+        const auditContext = {
+          investigationTraceId: tracer.traceId,
+          approvalTraceId: tracer.traceId,
+        };
         auditRecord = await reviewAndExecute(result.proposedAction, {
-          promptForApproval,
+          // Recorded before anything executes: a decision that can't be
+          // written down doesn't run.
+          promptForApproval: async (action) => {
+            const approved = await promptForApproval(action);
+            await auditLog.append({
+              event: "decision",
+              at: new Date().toISOString(),
+              decision: approved ? "approve" : "reject",
+              actor: "local CLI operator",
+              proposal: action,
+              ...auditContext,
+            });
+            return approved;
+          },
           issueWriter: runtime.issueWriter,
           issueTracker: runtime.dependencies.issueTracker,
           tracer,
           parentSpan: rootSpan,
         });
         printAuditRecord(auditRecord);
+        await auditLog.append({
+          event: "result",
+          at: new Date().toISOString(),
+          audit: auditRecord,
+          ...auditContext,
+        });
       }
 
       resultMetadata.evidenceCount = result.evidence.length;

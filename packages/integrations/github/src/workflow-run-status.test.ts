@@ -50,6 +50,62 @@ describe("summarizeWorkflowRuns", () => {
     ]);
   });
 
+  it.each(["startup_failure", "failure", "timed_out", "cancelled"])(
+    "is failing for conclusion %s",
+    (conclusion) => {
+      const result = summarizeWorkflowRuns([
+        { workflowName: "CI", status: "completed", conclusion, url: "u" },
+      ]);
+      expect(result.status).toBe("failing");
+    },
+  );
+
+  it.each(["skipped", "neutral", "stale", "a_future_github_value"])(
+    "is unknown, never success, when the only run concluded %s",
+    (conclusion) => {
+      const result = summarizeWorkflowRuns([
+        { workflowName: "CI", status: "completed", conclusion, url: "u" },
+      ]);
+      expect(result.status).toBe("unknown");
+    },
+  );
+
+  it("is success when a skipped workflow sits beside a successful one", () => {
+    const result = summarizeWorkflowRuns([
+      {
+        workflowName: "CI",
+        status: "completed",
+        conclusion: "success",
+        url: "u",
+      },
+      {
+        workflowName: "Docs",
+        status: "completed",
+        conclusion: "skipped",
+        url: "u",
+      },
+    ]);
+    expect(result.status).toBe("success");
+  });
+
+  it("is unknown when an unrecognized conclusion sits beside a successful one", () => {
+    const result = summarizeWorkflowRuns([
+      {
+        workflowName: "CI",
+        status: "completed",
+        conclusion: "success",
+        url: "u",
+      },
+      {
+        workflowName: "E2E",
+        status: "completed",
+        conclusion: "stale",
+        url: "u",
+      },
+    ]);
+    expect(result.status).toBe("unknown");
+  });
+
   it("prioritizes failing over pending when both are present across runs", () => {
     const result = summarizeWorkflowRuns([
       {

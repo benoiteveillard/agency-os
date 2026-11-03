@@ -20,6 +20,8 @@ function proposal(id = "proposal-1"): ProposedAction {
     kind: "linear_create_issue",
     args,
     rationale: "Unblock launch",
+    evidenceIds: [],
+    targetProjectName: "Acme",
     proposedAt: new Date(0).toISOString(),
     approvalDigest: computeApprovalDigest("linear_create_issue", args),
   };
@@ -33,6 +35,7 @@ function audit(
     kind: action.kind,
     args: action.args,
     rationale: action.rationale,
+    evidenceIds: action.evidenceIds,
     proposedAt: action.proposedAt,
     approvalDigest: action.approvalDigest,
     decision: outcome ? "approved" : "rejected",

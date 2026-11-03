@@ -12,6 +12,21 @@ describe("isOverdue", () => {
     expect(isOverdue("2026-09-01", "started", now)).toBe(true);
   });
 
+  it("is false for the whole of its due day, at any UTC hour", () => {
+    expect(
+      isOverdue("2026-09-12", "started", new Date("2026-09-12T00:00:00Z")),
+    ).toBe(false);
+    expect(
+      isOverdue("2026-09-12", "started", new Date("2026-09-12T23:59:59Z")),
+    ).toBe(false);
+  });
+
+  it("is true from the day after the due date", () => {
+    expect(
+      isOverdue("2026-09-12", "started", new Date("2026-09-13T00:00:00Z")),
+    ).toBe(true);
+  });
+
   it("is false when the due date is in the future", () => {
     expect(isOverdue("2026-12-01", "started", now)).toBe(false);
   });

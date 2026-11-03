@@ -11,8 +11,11 @@ export type ProposalStoreErrorCode =
   | "duplicate_proposal";
 
 export class ProposalStoreError extends Error {
-  constructor(public readonly code: ProposalStoreErrorCode) {
-    super(code);
+  constructor(
+    public readonly code: ProposalStoreErrorCode,
+    options?: ErrorOptions,
+  ) {
+    super(code, options);
     this.name = "ProposalStoreError";
   }
 }
@@ -119,14 +122,14 @@ export class ProposalStore {
         forgetAt: this.now() + this.retentionMs,
       });
       return audit;
-    } catch {
+    } catch (cause) {
       // An exception may have happened after a successful external write. Never retry it.
       this.entries.set(id, {
         state: "failed",
         decision,
         forgetAt: this.now() + this.retentionMs,
       });
-      throw new ProposalStoreError("proposal_execution_failed");
+      throw new ProposalStoreError("proposal_execution_failed", { cause });
     }
   }
 

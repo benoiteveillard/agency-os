@@ -79,6 +79,7 @@ async function main(): Promise<void> {
   let finalAnswer = "";
   let runStatus: "ok" | "error" = "ok";
   const resultMetadata: RunSummary["resultMetadata"] = {};
+  let evalArtifacts: RunSummary["evalArtifacts"];
   let closeLiveMcpClient: (() => Promise<void>) | undefined;
 
   try {
@@ -108,10 +109,26 @@ async function main(): Promise<void> {
       const result = await investigate(config.question ?? "", agentDeps, {
         anthropicApiKey,
         model: config.model,
+        ...(config.now ? { now: new Date(config.now) } : {}),
         tracer,
         parentSpan: rootSpan,
       });
       finalAnswer = result.answer;
+      if (config.mode === "fixture") {
+        evalArtifacts = {
+          ...(result.proposedAction
+            ? {
+                proposal: {
+                  title: result.proposedAction.args.title,
+                  description: result.proposedAction.args.description,
+                  rationale: result.proposedAction.rationale,
+                },
+              }
+            : {}),
+          blockerTitles:
+            result.assessment?.blockers.map((blocker) => blocker.title) ?? [],
+        };
+      }
       resultMetadata.evidenceCount = result.evidence.length;
       resultMetadata.toolCallCount = result.trace.length;
       resultMetadata.proposedAction = result.proposedAction !== undefined;
@@ -166,6 +183,7 @@ async function main(): Promise<void> {
         question: config.question ?? "",
         finalAnswer,
         resultMetadata,
+        ...(evalArtifacts ? { evalArtifacts } : {}),
       }),
       "utf-8",
     );

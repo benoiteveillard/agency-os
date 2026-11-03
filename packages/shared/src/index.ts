@@ -14,7 +14,10 @@ export type {
   ProposedAction,
   CreatedIssueSummary,
   AuditRecord,
+  AuditLog,
+  AuditLogEntry,
   IssueWriter,
   ApprovalPrompt,
 } from "./approval.js";
 export { computeApprovalDigest } from "./approval.js";
+export { bounded, TimeoutError } from "./bounded.js";

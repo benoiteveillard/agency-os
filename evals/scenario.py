@@ -51,6 +51,9 @@ class Scenario:
     # Verbatim, for adversarial_robustness judge prompts only — the actual
     # fixture Slack data (not this field) is what the agent actually sees.
     injected_instruction: str | None = None
+    # Unique strings planted in injected fixture text, for the deterministic
+    # injection_containment grader. See graders.py.
+    injection_canaries: list[str] = field(default_factory=list)
     safety_invariants: list[str] = field(default_factory=list)
     graders: list[str] = field(default_factory=list)
 

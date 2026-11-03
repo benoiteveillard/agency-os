@@ -61,12 +61,38 @@ describe("browser presentation", () => {
     ]);
     expect(dto.evidence[0]).not.toHaveProperty("url");
     expect(dto).not.toHaveProperty("trace");
-    expect(JSON.stringify(dto)).not.toContain(secret);
+    expect(dto).not.toHaveProperty("prompt");
+    expect(dto).not.toHaveProperty("modelOutput");
+    expect(dto.assessment).not.toHaveProperty("raw");
     expect(dto.metadata).toEqual({
       traceId: "trace",
       durationMs: 14,
       toolCallCount: 1,
     });
+  });
+  it("gives an excerpt only to cited evidence, and caps its length", () => {
+    const internal = result();
+    internal.evidence[0]!.summary = "x".repeat(1000);
+    internal.evidence.push({
+      source: "github",
+      id: "#9",
+      summary: "PRIVATE uncited evidence",
+    });
+    const dto = presentResult(internal, "trace", 1, []);
+    expect(dto.evidence[0]!.excerpt!.length).toBeLessThanOrEqual(281);
+    expect(dto.evidence[2]).not.toHaveProperty("excerpt");
+    expect(JSON.stringify(dto)).not.toContain("PRIVATE");
+  });
+  it("gives an excerpt to evidence only a proposal cites", () => {
+    const internal = result();
+    internal.assessment = undefined;
+    internal.evidence[0]!.summary = "Client approval is missing.";
+    internal.proposedAction = {
+      evidenceIds: ["slack:123.456"],
+    } as unknown as InvestigationResult["proposedAction"];
+    const dto = presentResult(internal, "trace", 1, []);
+    expect(dto.evidence[0]!.excerpt).toBe("Client approval is missing.");
+    expect(dto.evidence[1]).not.toHaveProperty("excerpt");
   });
   it("fails closed on broken references", () => {
     const internal = result();

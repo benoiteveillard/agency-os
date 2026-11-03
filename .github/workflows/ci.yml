@@ -21,6 +21,19 @@ jobs:
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
+      - run: pnpm format
       - run: pnpm typecheck
       - run: pnpm lint
       - run: pnpm test
+      - run: pnpm build
+      # Blocks on what ships. A dev-only advisory shouldn't stop an unrelated change.
+      - run: pnpm audit --prod --audit-level=high
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r evals/requirements.txt
+      # Deterministic, no model calls and no API key. The paid suites stay manual.
+      - run: python evals/regression/test_judge_failure_modes.py
+      - run: python evals/regression/test_grader_invariants.py
+      - run: python evals/run.py --suite free

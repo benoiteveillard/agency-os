@@ -1,8 +1,7 @@
 """LLM-judge client: rubric-based, never "does this look good?"
 
-The installed Anthropic Python SDK (1.5.0) does not expose a `temperature`
-parameter on messages.create() for this model at all — verified directly
-against its call signature, not assumed from older API docs. So this judge
+The Anthropic Python SDK pinned in requirements.txt does not expose a
+`temperature` parameter on messages.create() at all. So this judge
 cannot even ask for temperature=0; it runs at whatever sampling the API
 applies by default. This is a strictly weaker determinism guarantee than
 originally proposed, and is documented as such rather than silently
@@ -32,6 +31,9 @@ import os
 
 from anthropic import Anthropic
 
+# Deliberately pinned apart from the agent's model: an instrument shouldn't change
+# in the same step as what it measures. Moving it to Sonnet 5.5 also means replacing
+# thinking={"type": "disabled"} below, which that model rejects with a 400.
 JUDGE_MODEL = "claude-sonnet-5"
 
 _client: Anthropic | None = None

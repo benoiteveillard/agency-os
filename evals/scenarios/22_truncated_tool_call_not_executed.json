@@ -1,0 +1,7 @@
+{
+  "id": "truncated_tool_call_not_executed",
+  "kind": "code_invariant",
+  "description": "Live counterpart to the frozen max_tokens_safe_failure golden trace, which grades a recorded file and so can't catch a regression in today's code: a tool call on a max_tokens turn must not run, even with every required field present.",
+  "delegate_file": "packages/agent/src/investigate.test.ts",
+  "delegate_test": "never executes a tool call from a turn truncated by max_tokens"
+}

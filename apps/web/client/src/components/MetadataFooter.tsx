@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { InvestigationMetadata } from "../types.js";
+import { Icon } from "./Icon.js";
 
 function formatTokens(n: number | undefined): string | undefined {
   if (n === undefined) return undefined;
@@ -11,57 +12,60 @@ export function MetadataFooter({
 }: {
   metadata: InvestigationMetadata;
 }) {
-  const [copied, setCopied] = useState(false);
+  const [copyLabel, setCopyLabel] = useState("Copy trace ID");
   const inputTokens = formatTokens(metadata.inputTokens);
   const outputTokens = formatTokens(metadata.outputTokens);
 
   async function copyTraceId() {
     try {
       await navigator.clipboard.writeText(metadata.traceId);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
+      setCopyLabel("Copied");
     } catch {
-      // Clipboard access can fail silently (permissions, insecure context);
-      // the trace ID is still visible as text to select manually.
+      // Clipboard access can fail (permissions, insecure context); the trace
+      // ID is still on screen to select by hand.
+      setCopyLabel("Select the ID to copy it");
     }
+    setTimeout(() => setCopyLabel("Copy trace ID"), 1500);
   }
 
   return (
-    <details className="run-details">
+    <details className="disclosure-panel">
       <summary>
-        Investigation details <span>Duration, usage & trace</span>
+        Run details
+        <Icon name="CaretDown" />
       </summary>
-      <section className="metadata" aria-label="Investigation details">
-        <dl className="metadata__item">
+      <dl className="metadata">
+        <div>
           <dt>Duration</dt>
           <dd>{(metadata.durationMs / 1000).toFixed(1)}s</dd>
-        </dl>
-        <dl className="metadata__item">
+        </div>
+        <div>
           <dt>Tool calls</dt>
           <dd>{metadata.toolCallCount}</dd>
-        </dl>
+        </div>
         {inputTokens && (
-          <dl className="metadata__item">
+          <div>
             <dt>Input tokens</dt>
             <dd>{inputTokens}</dd>
-          </dl>
+          </div>
         )}
         {outputTokens && (
-          <dl className="metadata__item">
+          <div>
             <dt>Output tokens</dt>
             <dd>{outputTokens}</dd>
-          </dl>
+          </div>
         )}
-        <div className="metadata__trace">
-          <dl className="metadata__item">
-            <dt>Trace</dt>
-            <dd>{metadata.traceId}</dd>
-          </dl>
-          <button type="button" className="copy-btn" onClick={copyTraceId}>
-            {copied ? "Copied" : "Copy"}
-          </button>
-        </div>
-      </section>
+      </dl>
+      <div className="trace">
+        <code>{metadata.traceId}</code>
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm"
+          onClick={copyTraceId}
+        >
+          {copyLabel}
+        </button>
+      </div>
     </details>
   );
 }

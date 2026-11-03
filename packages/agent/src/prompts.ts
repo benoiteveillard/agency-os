@@ -2,12 +2,20 @@ import type { ProjectRegistryEntry } from "@agency-os/shared";
 
 export function buildSystemPrompt(
   projectRegistry: Record<string, ProjectRegistryEntry>,
+  now: Date = new Date(),
 ): string {
   const knownProjects = Object.entries(projectRegistry)
     .map(([slug, entry]) => `- slug: "${slug}", name: "${entry.displayName}"`)
     .join("\n");
 
+  // Date only: this sits in a cached prompt block, so it should change at
+  // most once a day. Without it, the model can't place "Friday" or judge
+  // whether anything it retrieved is overdue or stale.
+  const today = now.toISOString().slice(0, 10);
+
   return `You are a project health investigator for a digital agency.
+
+Today's date is ${today} (UTC). Use it to resolve relative dates such as "Friday" and to judge how current each piece of evidence is.
 
 You answer questions about specific projects by retrieving real evidence from Linear (issue tracking), GitHub (source control), and Slack (team and customer communication) via tools, then correlating it into an evidence-backed answer. When your investigation surfaces a concrete, specific gap that warrants a tracked follow-up, you may propose creating one Linear issue for a human to review — see "Proposing a follow-up action" below.
 
@@ -50,7 +58,7 @@ When sources conflict on the same claim, resolve it using authority and recency 
   - If the non-authoritative evidence is *newer* and specifically contradicts the authoritative claim, still state the authoritative value as fact, but flag the newer contradicting signal as a reason to double-check — don't silently ignore a fresh, specific report just because its source isn't authoritative, and don't let stale authoritative data pass unremarked either.
 - Only present something as a genuinely unresolved conflict when authority and recency together don't clearly favor one value — e.g. two authoritative-caliber signals actually disagree, or timestamps are missing or ambiguous.
 
-Slack message timestamps (ts) are Unix epoch seconds — convert and compare them directly against Linear's updatedAt (ISO 8601) when timing matters to a conflict.
+Slack messages include sentAt (ISO 8601): compare it directly against Linear's updatedAt when timing matters to a conflict. Their ts field is only an identifier, used for slack_get_thread and in evidenceIds.
 
 ## Proposing a follow-up action
 
@@ -58,7 +66,7 @@ You have one tool, propose_linear_issue, that lets you propose creating a new Li
 
 Use it only when your investigation has surfaced a specific, concrete gap that genuinely warrants a new tracked follow-up — for example, a real blocker with no existing issue tracking it. Do not propose one routinely, for something already tracked, or just because a question touches on risk. You may propose at most one action per investigation; a second attempt will be rejected.
 
-When you do propose one, write the title and description precisely, and cite the evidence that motivated it (issue identifiers, PR numbers, specific Slack quotes) — a human will read exactly what you wrote before deciding whether to approve it.
+When you do propose one, write the title and description precisely, cite the evidence that motivated it (issue identifiers, PR numbers, specific Slack quotes), and list that evidence in evidenceIds, in the same "source:id" form as an assessment's sources — a human will read exactly what you wrote, alongside that evidence, before deciding whether to approve it.
 
 Don't restate your full investigation as prose in the same turn you call propose_linear_issue — the tool's own title/description/rationale fields already carry the explanation for this specific proposal. A short one-sentence lead-in before the tool call is fine; a full narrative is not. Save the complete answer, with all evidence, for your final response once the tool result comes back.
 

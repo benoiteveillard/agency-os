@@ -2,6 +2,7 @@ import { useCallback, useReducer, useRef } from "react";
 import { ApiRequestError, streamInvestigation } from "../api.js";
 import type {
   ApiError,
+  AssessmentReadyData,
   InvestigationResultDTO,
   SSEMessage,
   Source,
@@ -20,6 +21,9 @@ export interface AssessingActivity {
 }
 export type Activity = SourceActivity | AssessingActivity;
 
+/** What assessment.ready reports, before the full result arrives. */
+export type PreliminaryVerdict = AssessmentReadyData;
+
 export type InvestigationState =
   | { phase: "idle" }
   | {
@@ -27,6 +31,7 @@ export type InvestigationState =
       question: string;
       traceId?: string;
       activities: Activity[];
+      preliminary?: PreliminaryVerdict;
       /** Internal: distinguishes this run from a superseded one whose
        * in-flight SSE messages may still be arriving after abort() is
        * called but before the stream actually stops. */
@@ -50,6 +55,7 @@ type Action =
   | { type: "start"; question: string; runId: number }
   | { type: "message"; message: SSEMessage; runId: number }
   | { type: "transportError"; error: ApiError; runId: number }
+  | { type: "streamEnded"; runId: number }
   | { type: "reset" };
 
 function upsertSource(
@@ -115,6 +121,21 @@ function reducer(
       traceId: state.traceId,
     };
   }
+  if (action.type === "streamEnded") {
+    // Still running here means the stream closed without a completed or failed
+    // event (a proxy cut, a server restart). A terminal event would already
+    // have moved this run out of "running".
+    return {
+      phase: "failed",
+      question: state.question,
+      activities: state.activities,
+      error: {
+        code: "network_error",
+        message: "Connection to the server was interrupted.",
+      },
+      traceId: state.traceId,
+    };
+  }
   const { message } = action;
   switch (message.event) {
     case "investigation.started":
@@ -147,6 +168,7 @@ function reducer(
       return {
         ...state,
         activities: upsertAssessing(state.activities, "done"),
+        preliminary: message.data,
       };
     case "action.proposed":
     case "assessment.completed":
@@ -189,6 +211,7 @@ export function useInvestigation() {
       )) {
         dispatch({ type: "message", message, runId });
       }
+      dispatch({ type: "streamEnded", runId });
     } catch (error) {
       if (controller.signal.aborted) return;
       dispatch({

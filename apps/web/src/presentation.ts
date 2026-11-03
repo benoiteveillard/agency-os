@@ -1,4 +1,4 @@
-import type { SpanRecord } from "@agency-os/observability";
+import { truncate, type SpanRecord } from "@agency-os/observability";
 import type {
   Assessment,
   AuditRecord,
@@ -36,6 +36,8 @@ export function sourceUrl(
   }
 }
 
+const MAX_EXCERPT_LENGTH = 280;
+
 export function presentProposal(action: ProposedAction, expiresAt: string) {
   return {
     proposalId: action.id,
@@ -46,7 +48,9 @@ export function presentProposal(action: ProposedAction, expiresAt: string) {
     // Target identifiers are presentation-only, never accepted on the decide endpoint.
     teamId: action.args.teamId,
     projectId: action.args.projectId,
+    projectName: action.targetProjectName,
     rationale: action.rationale,
+    evidenceIds: [...action.evidenceIds],
     expiresAt,
   };
 }
@@ -74,10 +78,22 @@ export function presentResult(
   spans: readonly SpanRecord[],
   proposedActionPresentation?: ProposalPresentation,
 ) {
+  // Only what the conclusion actually rests on gets an excerpt: enough for a
+  // reader to check a citation without opening the source, and no more of the
+  // retrieved data than that. It's untrusted text, rendered as plain text.
+  const cited = new Set([
+    ...(result.assessment?.blockers.flatMap((blocker) =>
+      blocker.sources.map((ref) => ref.evidenceId),
+    ) ?? []),
+    ...(result.proposedAction?.evidenceIds ?? []),
+  ]);
   const evidence = result.evidence.map((item) => ({
     evidenceId: `${item.source}:${item.id}`,
     source: item.source,
     id: item.id,
+    ...(cited.has(`${item.source}:${item.id}`)
+      ? { excerpt: truncate(item.summary, MAX_EXCERPT_LENGTH) }
+      : {}),
     ...(item.timestamp ? { timestamp: item.timestamp } : {}),
     ...(sourceUrl(item.url, item.source)
       ? { url: sourceUrl(item.url, item.source) }

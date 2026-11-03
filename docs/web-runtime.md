@@ -102,6 +102,7 @@ and occur after the agent returns, before terminal completion.
     id: string;
     timestamp?: string;
     url?: string;
+    excerpt?: string; // only on evidence a blocker or proposal cites
   }>;
   proposedActionPresentation?: {
     proposalId: string;
@@ -110,6 +111,8 @@ and occur after the agent returns, before terminal completion.
     description: string;
     priority: number;
     teamId: string;
+    projectName: string;
+    evidenceIds: string[];
     projectId: string;
     rationale: string;
     expiresAt: string;
@@ -161,13 +164,25 @@ failure may itself be ambiguous, so even failures cannot be re-executed under
 that proposal. Unexpected errors before HTTP streaming use a generic
 `500 internal_error`; Hono's streaming fallback error message is sanitized too.
 
-`execution_disabled` (Phase 7.4): server-owned `DEMO_WRITE_MODE=disabled`
-env var, read once from `process.env` in `apps/web/src/app.ts`, never from
-any client-supplied value. `reviewAndExecute` still records a genuine
-approval (a human did approve) but returns this outcome immediately after
-the `approval.decision` span, before the digest check and without ever
-calling `issueWriter.createIssue`. Unset (the CLI's own call site never
-sets it), real writes behave exactly as before this phase.
+`execution_disabled`: server-owned `DEMO_WRITE_MODE` env var, read from
+`process.env` in `apps/web/src/app.ts`, never from any client-supplied value.
+Only the exact value `enabled` allows real writes; unset or anything else
+returns this outcome. `reviewAndExecute` still records a genuine approval (a
+human did approve) but returns immediately after the `approval.decision` span,
+before the digest check and without ever calling `issueWriter.createIssue`.
+The CLI doesn't read this variable and always writes after its own prompt.
+
+A rejection, or an approval with writes disabled, doesn't start a runtime, so
+it can't fail on a missing credential or an MCP process that won't start. A
+decision that fails is logged as `proposal.decision_failed`, with its category
+and a truncated message; the response stays generic.
+
+Every decision is appended to the audit log (`.audit/decisions.jsonl` under
+`AGENCY_DATA_DIR`): a `decision` entry before anything executes and a `result`
+entry after. If the `decision` entry can't be written, nothing executes and the
+response is the generic 502. A failed `result` entry is logged as
+`audit.result_write_failed`, since the write has already happened by then. A
+write that times out (30 seconds) is reported as `executed_unconfirmed`.
 
 ## Proposal lifecycle and concurrency
 
@@ -202,30 +217,36 @@ Railway V1 assumes one persistent Node process. Multiple replicas would need a
 shared proposal store and coordination; neither is implemented. Restart loses
 all pending proposals and audit replays. There is no history or resume API.
 
+## Evidence shown to the reader
+
+Evidence that a blocker or a proposal cites carries an `excerpt`: its summary,
+capped at 280 characters. Uncited evidence stays identifiers, dates and links.
+Excerpts are untrusted text and render as plain text. See `docs/decisions.md`
+"Audit follow-up" for this change to the earlier no-evidence-text boundary.
+
 ## Disconnect and observability
 
-Choice B: the investigation finishes after client disconnect. The unchanged agent
-API has no cancellation signal. Polling and client writes stop after disconnect;
-the running investigation still closes its runtime, retains any canonical
-proposal until TTL, and persists/exports its trace. This is in-flight work in
-one process, not a background-job system. There is no result recovery endpoint.
-The existing agent turn limit and provider timeouts remain unchanged.
+A client disconnect cancels the investigation: no further model call is made,
+no proposal is kept, the runtime closes and the concurrency slot is freed. It's
+logged as `investigation.cancelled`. Nobody could read the result or act on its
+proposal, so finishing would only spend money and hold the slot. A run also ends
+at `INVESTIGATION_TIMEOUT_MS` (default 4 minutes) with `investigation.failed`, and
+a single tool call at 30 seconds, reported to the model as a tool failure. A
+stream that closes with no terminal event shows the client's connection error
+rather than leaving the page on "Investigating…".
 
-Investigation owns one `agent.run` root. Existing model/tool/assessment/proposal
-spans remain its descendants. Approval has a separate `web.approval` root with
-`proposalId` and `investigationTraceId` attributes; no fabricated parent across
-requests. Retried decisions do not create another execution trace.
-
-Local `.traces/<traceId>.jsonl` keeps existing scalar spans; web run summaries
-omit question/answer text. The existing OTLP exporter is optional, disabled by
-default, best effort, and asynchronous relative to the HTTP response. Its result
-is logged as `{event:"trace.export",traceId,attempted,ok}`, without endpoint,
-credentials or provider response text. Export failure cannot fail the response.
+`<AGENCY_DATA_DIR>/.traces/<traceId>.jsonl` keeps the scalar spans plus a run
+summary: the question, the final answer and the root span's scalar attributes.
+OTLP export receives spans only, with the question truncated to 200 characters.
+The exporter is optional, disabled by default, best effort, and asynchronous
+relative to the HTTP response. Its result is logged as
+`{event:"trace.export",traceId,attempted,ok}`, without endpoint, credentials or
+provider response text. Export failure cannot fail the response.
 
 The HTTP boundary is an allowlisted projection, not a general content sanitizer:
 answer, assessment prose and proposal text are intentionally customer-facing
 model output. A model can quote retrieved text in those fields; privacy tests
-prove raw evidence/trace/tool fields are excluded, not that arbitrary generated
+prove raw trace/tool fields and uncited evidence text are excluded, not that arbitrary generated
 prose can never repeat external content. Future UI must render these fields as
 untrusted text/sanitized Markdown, never raw HTML. Prompt-injection behavior,
 known structured-tool retry failures and token overhead are unchanged.
