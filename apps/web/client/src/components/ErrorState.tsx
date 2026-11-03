@@ -1,4 +1,5 @@
 import type { ApiError } from "../types.js";
+import { Icon } from "./Icon.js";
 
 export function ErrorState({
   error,
@@ -10,26 +11,25 @@ export function ErrorState({
   const isTransport = error.code === "network_error";
   const isBusy = error.code === "demo_busy";
   return (
-    <div className="state-card state-card--error" role="alert">
-      <p className="state-card__title">
+    <div className="run-failed" role="alert">
+      <Icon name={isTransport ? "WifiOff" : "Cross"} />
+      <h2>
         {isBusy
           ? "The demo is busy"
           : isTransport
-            ? "Connection interrupted"
+            ? "The connection was interrupted"
             : "The investigation could not complete"}
-      </p>
-      <p className="state-card__body">
+      </h2>
+      <p>
         {isBusy
           ? error.message
           : isTransport
-            ? "The connection to the server was lost partway through. This is a transport issue, not a finding about the project."
-            : "Something went wrong while investigating this project. No verdict was produced."}
+            ? "The connection to the server was lost partway through. This says nothing about the project."
+            : "Something went wrong while investigating. No verdict was produced, so treat the launch status as unknown."}
       </p>
-      <div className="state-card__actions">
-        <button type="button" className="btn btn-primary" onClick={onRetry}>
-          Try again
-        </button>
-      </div>
+      <button type="button" className="btn btn-primary" onClick={onRetry}>
+        Try again
+      </button>
     </div>
   );
 }

@@ -1,17 +1,23 @@
 import { Hono, type Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import { bodyLimit } from "hono/body-limit";
-import { investigate, reviewAndExecute } from "@agency-os/agent";
+import {
+  investigate,
+  reviewAndExecute,
+  type ReviewAndExecuteDeps,
+} from "@agency-os/agent";
 import {
   categorizeError,
   truncateErrorMessage,
   Tracer,
+  type RunSummary,
   type SpanRecord,
 } from "@agency-os/observability";
 import {
   createProductionRuntime,
   type ProductionRuntime,
 } from "@agency-os/runtime";
+import { bounded, type AuditLog } from "@agency-os/shared";
 import { ProposalStore, ProposalStoreError } from "./proposal-store.js";
 import { ProgressMapper } from "./progress.js";
 import {
@@ -25,7 +31,16 @@ export interface WebOptions {
   investigate?: typeof investigate;
   store?: ProposalStore;
   /** Called with a completed trace. Must not gate the HTTP result. */
-  onTrace?: (spans: SpanRecord[]) => Promise<void>;
+  onTrace?: (
+    spans: SpanRecord[],
+    summary: Omit<RunSummary, "traceId">,
+  ) => Promise<void>;
+  /**
+   * Durable record of every decision. A decision that can't be recorded isn't
+   * executed; a result that can't be recorded is logged, since the write has
+   * already happened by then.
+   */
+  auditLog?: AuditLog;
   pollMs?: number;
   /**
    * Phase 7.4: smallest reasonable protection against a public demo
@@ -33,10 +48,22 @@ export interface WebOptions {
    * concurrently running investigations, not per-IP/per-user (no auth,
    * no Redis, no database; this is a single-replica portfolio demo, see
    * docs/decisions.md "Phase 7.4"). Defaults to
-   * MAX_CONCURRENT_INVESTIGATIONS, or 1 if unset.
+   * MAX_CONCURRENT_INVESTIGATIONS, or 1 if unset. Anything but a positive
+   * integer refuses to start, since an unparseable value would otherwise
+   * remove the cap.
    */
   maxConcurrentInvestigations?: number;
+  /**
+   * Hard limit on one investigation, so a stuck run can't hold the only
+   * concurrency slot. Defaults to INVESTIGATION_TIMEOUT_MS, or 4 minutes
+   * (the slowest recorded live run took about 93 seconds).
+   */
+  investigationTimeoutMs?: number;
+  /** Limit on starting a runtime for an approved write. Overridable for tests. */
+  runtimeStartTimeoutMs?: number;
 }
+const DEFAULT_INVESTIGATION_TIMEOUT_MS = 240_000;
+const RUNTIME_START_TIMEOUT_MS = 30_000;
 const INVALID = {
   error: {
     code: "invalid_request",
@@ -65,19 +92,98 @@ async function body(c: Context, field: string): Promise<unknown> {
   }
 }
 
+/** Refuses to start on anything but a positive integer, rather than running unbounded. */
+function resolvePositiveInt(
+  name: string,
+  explicit: number | undefined,
+  fallback: number,
+): number {
+  const value = explicit ?? Number(process.env[name] ?? fallback);
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new Error(`Invalid ${name}: expected a positive integer.`);
+  }
+  return value;
+}
+
+/**
+ * Real external writes are opt-in: only the exact value "enabled" allows them,
+ * so an unset or mistyped variable fails closed. Server-owned, never
+ * client-controlled. See docs/decisions.md.
+ */
+function writesEnabled(): boolean {
+  return process.env.DEMO_WRITE_MODE === "enabled";
+}
+
+/**
+ * Stands in for the write and read-back ports when a decision can't reach them
+ * (a rejection, or an approval with writes disabled), so those decisions don't
+ * need a runtime, its credentials or an MCP process. Throwing keeps any future
+ * path that does reach them from passing silently.
+ */
+const UNREACHABLE_DECISION_PORTS: Pick<
+  ReviewAndExecuteDeps,
+  "issueWriter" | "issueTracker"
+> = {
+  issueWriter: {
+    createIssue: async () => {
+      throw new Error("Writes are not available for this decision.");
+    },
+  },
+  issueTracker: {
+    listProjectIssues: async () => {
+      throw new Error("Reads are not available for this decision.");
+    },
+    getIssue: async () => {
+      throw new Error("Reads are not available for this decision.");
+    },
+  },
+};
+
 export function createWebApp(options: WebOptions = {}) {
   const app = new Hono();
-  const factory = options.createRuntime ?? createProductionRuntime;
+  const factory =
+    options.createRuntime ??
+    (() => createProductionRuntime({ writesEnabled: writesEnabled() }));
   const runInvestigation = options.investigate ?? investigate;
   const store = options.store ?? new ProposalStore();
-  const maxConcurrentInvestigations =
-    options.maxConcurrentInvestigations ??
-    Number(process.env.MAX_CONCURRENT_INVESTIGATIONS ?? "1");
+  const maxConcurrentInvestigations = resolvePositiveInt(
+    "MAX_CONCURRENT_INVESTIGATIONS",
+    options.maxConcurrentInvestigations,
+    1,
+  );
+  const investigationTimeoutMs = resolvePositiveInt(
+    "INVESTIGATION_TIMEOUT_MS",
+    options.investigationTimeoutMs,
+    DEFAULT_INVESTIGATION_TIMEOUT_MS,
+  );
+  // Stops waiting for a runtime that's slow to start, and closes it if it does
+  // turn up later, so a late MCP process isn't left running.
+  const startRuntime = (limits: {
+    timeoutMs?: number;
+    signal?: AbortSignal;
+  }): Promise<ProductionRuntime> => {
+    const starting = factory();
+    return bounded(starting, {
+      ...limits,
+      message: "Runtime start timed out.",
+    }).catch((error: unknown) => {
+      void starting.then((late) => late.close()).catch(() => {});
+      throw error;
+    });
+  };
   let activeInvestigations = 0;
-  const publish = (tracer: Tracer) => {
+  const publish = (
+    tracer: Tracer,
+    root: { question: string; finalAnswer: string },
+  ) => {
+    const resultMetadata = {
+      ...tracer.getSpans().find((span) => !span.parentSpanId)?.attributes,
+    };
     // Independent of HTTP delivery, including disconnected clients. Catch sync and async failures.
     void Promise.resolve()
-      .then(() => options.onTrace?.(tracer.getSpans()))
+      .then(() =>
+        options.onTrace?.(tracer.getSpans(), { ...root, resultMetadata }),
+      )
       .catch(() => {
         console.error(
           JSON.stringify({
@@ -168,12 +274,28 @@ export function createWebApp(options: WebOptions = {}) {
       c,
       async (stream) => {
         const tracer = new Tracer();
-        const root = tracer.startSpan("agent.run", "run");
+        const root = tracer.startSpan("agent.run", "run", {
+          attributes: { question: question.trim().slice(0, 200) },
+        });
+        let finalAnswer = "";
         const startedAt = Date.now();
         const mapper = new ProgressMapper();
         let disconnected = false;
+        const cancellation = new AbortController();
+        const deadline = setTimeout(
+          () =>
+            cancellation.abort(
+              new Error("Investigation exceeded its deadline."),
+            ),
+          investigationTimeoutMs,
+        );
+        // Nobody can read the result or act on its proposal any more, so
+        // finishing the run would only spend money and hold the slot.
         stream.onAbort(() => {
           disconnected = true;
+          cancellation.abort(
+            new Error("Investigation cancelled: client disconnected."),
+          );
         });
         let sequence = 0;
         const send = async (event: string, data: unknown) => {
@@ -195,7 +317,7 @@ export function createWebApp(options: WebOptions = {}) {
           let runtime: ProductionRuntime | undefined;
           let ok = false;
           try {
-            runtime = await factory();
+            runtime = await startRuntime({ signal: cancellation.signal });
             const result = await runInvestigation(
               question.trim(),
               runtime.dependencies,
@@ -203,8 +325,11 @@ export function createWebApp(options: WebOptions = {}) {
                 anthropicApiKey: runtime.anthropicApiKey,
                 tracer,
                 parentSpan: root,
+                signal: cancellation.signal,
               },
             );
+            cancellation.signal.throwIfAborted();
+            finalAnswer = result.answer;
             // Validate/projection before publishing the canonical action in the store.
             const dto = presentResult(
               result,
@@ -241,10 +366,16 @@ export function createWebApp(options: WebOptions = {}) {
             // failures undiagnosable without live SSH/console access to
             // the process — found running Phase 7.4's own production
             // smoke test.
-            const message = (err as Error).message;
+            const message = (
+              (cancellation.signal.aborted
+                ? cancellation.signal.reason
+                : err) as Error
+            ).message;
             console.error(
               JSON.stringify({
-                event: "investigation.failed",
+                event: disconnected
+                  ? "investigation.cancelled"
+                  : "investigation.failed",
                 traceId: tracer.traceId,
                 category: categorizeError(message),
                 message: truncateErrorMessage(message),
@@ -263,9 +394,10 @@ export function createWebApp(options: WebOptions = {}) {
                 }),
               );
             }
-            publish(tracer);
+            publish(tracer, { question: question.trim(), finalAnswer });
           }
         })().finally(() => {
+          clearTimeout(deadline);
           settled = true;
           activeInvestigations--;
         });
@@ -327,22 +459,57 @@ export function createWebApp(options: WebOptions = {}) {
           const root = tracer.startSpan("web.approval", "run", {
             attributes: { proposalId: action.id, investigationTraceId },
           });
+          const auditContext = {
+            investigationTraceId,
+            approvalTraceId: tracer.traceId,
+          };
           let runtime: ProductionRuntime | undefined;
           let ok = false;
           try {
-            runtime = await factory();
+            const canWrite = writesEnabled();
+            if (decision === "approve" && canWrite) {
+              runtime = await startRuntime({
+                timeoutMs:
+                  options.runtimeStartTimeoutMs ?? RUNTIME_START_TIMEOUT_MS,
+              });
+            }
             const result = await reviewAndExecute(action, {
-              promptForApproval: async () => decision === "approve",
-              issueWriter: runtime.issueWriter,
-              issueTracker: runtime.dependencies.issueTracker,
+              promptForApproval: async (proposal) => {
+                await options.auditLog?.append({
+                  event: "decision",
+                  at: new Date().toISOString(),
+                  decision,
+                  actor: "anonymous web visitor",
+                  proposal,
+                  ...auditContext,
+                });
+                return decision === "approve";
+              },
+              issueWriter:
+                runtime?.issueWriter ?? UNREACHABLE_DECISION_PORTS.issueWriter,
+              issueTracker:
+                runtime?.dependencies.issueTracker ??
+                UNREACHABLE_DECISION_PORTS.issueTracker,
               tracer,
               parentSpan: root,
-              // Server-owned, never client-controlled: set only via this
-              // process's own environment. See docs/decisions.md "Phase
-              // 7.4" for why a public demo can't expose unrestricted real
-              // writes.
-              writesEnabled: process.env.DEMO_WRITE_MODE !== "disabled",
+              writesEnabled: canWrite,
             });
+            try {
+              await options.auditLog?.append({
+                event: "result",
+                at: new Date().toISOString(),
+                audit: result,
+                ...auditContext,
+              });
+            } catch {
+              console.error(
+                JSON.stringify({
+                  event: "audit.result_write_failed",
+                  proposalId: action.id,
+                  traceId: tracer.traceId,
+                }),
+              );
+            }
             root.setAttribute("approvalDecision", result.decision);
             if (result.execution)
               root.setAttribute("executionOutcome", result.execution.outcome);
@@ -360,7 +527,7 @@ export function createWebApp(options: WebOptions = {}) {
                 }),
               );
             }
-            publish(tracer);
+            publish(tracer, { question: "", finalAnswer: "" });
           }
         },
       );
@@ -373,6 +540,21 @@ export function createWebApp(options: WebOptions = {}) {
         error instanceof ProposalStoreError
           ? error.code
           : "proposal_execution_failed";
+      // Only the attempt that actually failed has a cause; a repeat request
+      // for an already-failed proposal has nothing new to report.
+      const cause = error instanceof ProposalStoreError ? error.cause : error;
+      if (code === "proposal_execution_failed" && cause) {
+        const message = (cause as Error).message;
+        console.error(
+          JSON.stringify({
+            event: "proposal.decision_failed",
+            proposalId: c.req.param("proposalId"),
+            decision,
+            category: categorizeError(message),
+            message: truncateErrorMessage(message),
+          }),
+        );
+      }
       if (code === "unknown_proposal")
         return c.json(
           {

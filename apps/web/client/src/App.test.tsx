@@ -100,8 +100,12 @@ function fullSSESequence(overrides: Partial<InvestigationResultDTO> = {}) {
   ] as SSEMessage[];
 }
 
-function mockFetch(handler: (input: RequestInfo | URL) => Promise<Response>) {
-  vi.stubGlobal("fetch", vi.fn(handler));
+function mockFetch(
+  handler: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>,
+) {
+  const fetchMock = vi.fn(handler);
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
 }
 
 afterEach(() => {
@@ -112,12 +116,16 @@ describe("initial state", () => {
   it("explains the product before any interaction", () => {
     render(<App />);
     expect(
-      screen.getByRole("heading", { name: "Acme Website Migration" }),
+      screen.getByRole("heading", {
+        name: "What do you need to know about this launch?",
+      }),
     ).toBeInTheDocument();
-    expect(screen.getByText(/Target launch/)).toBeInTheDocument();
-    expect(screen.getByText("Linear")).toBeInTheDocument();
-    expect(screen.getByText("GitHub")).toBeInTheDocument();
-    expect(screen.getByText("Slack")).toBeInTheDocument();
+    expect(screen.getByText("Acme Website Migration")).toBeInTheDocument();
+    expect(
+      screen.getByText(/this project.s Linear, GitHub and Slack/),
+    ).toBeInTheDocument();
+    // No launch date here: nothing has retrieved one yet.
+    expect(screen.queryByText(/Target launch/)).not.toBeInTheDocument();
     expect(
       screen.getByText(/Are we still on track to launch Project Acme/),
     ).toBeInTheDocument();
@@ -149,7 +157,7 @@ describe("asking a question", () => {
     fireEvent.change(screen.getByLabelText("Ask about this project"), {
       target: { value: "Is JUS-6 blocking launch?" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Ask" }));
+    fireEvent.click(screen.getByRole("button", { name: "Investigate" }));
     await waitFor(() =>
       expect(screen.getByText("High risk")).toBeInTheDocument(),
     );
@@ -166,12 +174,14 @@ describe("live progress", () => {
         name: /Are we still on track to launch Project Acme/,
       }),
     );
-    await waitFor(() => expect(screen.getByText("Linear")).toBeInTheDocument());
-    expect(screen.getByText("GitHub")).toBeInTheDocument();
-    // Slack never appeared in this stream — must not be fabricated.
-    expect(
-      screen.queryByText("Slack", { selector: ".progress-item__label" }),
-    ).not.toBeInTheDocument();
+    const sources = await screen.findByRole("group", {
+      name: "Sources checked",
+    });
+    expect(sources).toHaveTextContent(/Linear checked/);
+    expect(sources).toHaveTextContent(/GitHub checked/);
+    // Slack never appeared in this stream, so it must not be fabricated as checked.
+    expect(sources).not.toHaveTextContent(/Slack checked/);
+    expect(sources).toHaveTextContent(/Slack not checked/);
   });
 });
 
@@ -188,8 +198,8 @@ describe("assessment verdicts", () => {
       expect(screen.getByText("High risk")).toBeInTheDocument(),
     );
     expect(screen.getByText("Client approval missing")).toBeInTheDocument();
-    expect(screen.getByText("Authoritative")).toBeInTheDocument();
-    expect(screen.getByText("Corroborating")).toBeInTheDocument();
+    expect(screen.getByText("Decides status")).toBeInTheDocument();
+    expect(screen.getByText("Supports")).toBeInTheDocument();
     expect(
       screen.getByText(/Safari regression status has not been reconfirmed/),
     ).toBeInTheDocument();
@@ -216,7 +226,9 @@ describe("assessment verdicts", () => {
     await waitFor(() =>
       expect(screen.getByText("On track")).toBeInTheDocument(),
     );
-    expect(screen.queryByText("Launch blockers")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("What is blocking the launch"),
+    ).not.toBeInTheDocument();
   });
 
   it("renders insufficient_evidence as a valid assessment state, not an error", async () => {
@@ -255,6 +267,8 @@ describe("proposed action", () => {
         priority: 1,
         teamId: "team-1",
         projectId: "project-1",
+        projectName: "Acme Website Migration",
+        evidenceIds: ["slack:100.001"],
         rationale: "No tracking issue exists yet.",
         expiresAt: new Date(Date.now() + 60_000).toISOString(),
       },
@@ -284,7 +298,7 @@ describe("proposed action", () => {
   it("shows a pending proposal with human-controlled actions, never internal digest/JSON", async () => {
     await renderWithProposal();
     expect(
-      screen.getByRole("button", { name: "Approve action" }),
+      screen.getByRole("button", { name: "Approve and create issue" }),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Reject" })).toBeInTheDocument();
     expect(screen.queryByText(/approvalDigest/)).not.toBeInTheDocument();
@@ -308,7 +322,7 @@ describe("proposed action", () => {
     fireEvent.click(screen.getByRole("button", { name: "Reject" }));
     await waitFor(() =>
       expect(
-        screen.getByText("Action rejected — no changes were made."),
+        screen.getByText(/No change was made in Linear/),
       ).toBeInTheDocument(),
     );
     expect(decideMock).toHaveBeenCalledWith(
@@ -341,7 +355,9 @@ describe("proposed action", () => {
           ),
       ),
     );
-    fireEvent.click(screen.getByRole("button", { name: "Approve action" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Approve and create issue" }),
+    );
     await waitFor(() =>
       expect(screen.getByText(/Approved and created/)).toBeInTheDocument(),
     );
@@ -371,7 +387,9 @@ describe("proposed action", () => {
           ),
       ),
     );
-    fireEvent.click(screen.getByRole("button", { name: "Approve action" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Approve and create issue" }),
+    );
     await waitFor(() =>
       expect(
         screen.getByText(/not be retried automatically/),
@@ -394,7 +412,9 @@ describe("proposed action", () => {
           ),
       ),
     );
-    fireEvent.click(screen.getByRole("button", { name: "Approve action" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Approve and create issue" }),
+    );
     await waitFor(() =>
       expect(
         screen.getByText(
@@ -441,6 +461,204 @@ describe("investigation failure and retry", () => {
   });
 });
 
+describe("the answer is always visible", () => {
+  async function ask(result: InvestigationResultDTO, extra: SSEMessage[] = []) {
+    mockFetch(async () =>
+      sseResponse([
+        { event: "investigation.started", data: { traceId: "t" } },
+        ...extra,
+        { event: "investigation.completed", data: result },
+      ]),
+    );
+    render(<App />);
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /Are we still on track to launch Project Acme/,
+      }),
+    );
+    await screen.findByRole("heading", { name: "Investigation brief" });
+  }
+
+  it("shows the answer directly for a question with no assessment", async () => {
+    await ask(baseResult({ answer: "PR #12 is failing CI." }));
+    expect(screen.getByText("PR #12 is failing CI.")).toBeInTheDocument();
+    expect(screen.queryByText("Full analysis")).not.toBeInTheDocument();
+  });
+
+  it("shows the answer directly for a verdict with no blockers", async () => {
+    await ask(
+      baseResult({
+        answer: "Everything is moving.",
+        assessment: { verdict: "on_track", summary: "All good.", blockers: [] },
+      }),
+    );
+    expect(screen.getByText("Everything is moving.")).toBeInTheDocument();
+  });
+
+  it("leads the verdict with the finding itself, as the heading", async () => {
+    await ask(
+      baseResult({
+        assessment: {
+          verdict: "on_track",
+          summary: "Nothing threatens the date.",
+          blockers: [],
+        },
+      }),
+    );
+    expect(
+      screen.getByRole("heading", { name: "Nothing threatens the date." }),
+    ).toBeInTheDocument();
+  });
+
+  it("says on the verdict itself when a source couldn't be checked", async () => {
+    await ask(
+      baseResult({
+        assessment: { verdict: "on_track", summary: "Fine.", blockers: [] },
+      }),
+      [
+        { event: "source.started", data: { activityId: 1, source: "slack" } },
+        {
+          event: "source.completed",
+          data: { activityId: 1, source: "slack", ok: false },
+        },
+      ],
+    );
+    expect(
+      screen.getByRole("region", { name: "Assessment verdict" }),
+    ).toHaveTextContent(
+      /Slack couldn.t be checked, so this verdict doesn.t account for it/,
+    );
+  });
+});
+
+describe("asking", () => {
+  const typeQuestion = () => {
+    const box = screen.getByRole("textbox", { name: "Ask about this project" });
+    fireEvent.change(box, { target: { value: "What's blocking us?" } });
+    return box;
+  };
+
+  it("asks on Enter and adds a line on Shift+Enter", async () => {
+    const fetchMock = mockFetch(async () => sseResponse(fullSSESequence()));
+    render(<App />);
+    const box = typeQuestion();
+    fireEvent.keyDown(box, { key: "Enter", shiftKey: true });
+    expect(fetchMock).not.toHaveBeenCalled();
+    fireEvent.keyDown(box, { key: "Enter" });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+  });
+
+  it("can cancel a running investigation, which aborts the request", async () => {
+    let signal: AbortSignal | undefined;
+    mockFetch(async (_input, init) => {
+      signal = init?.signal ?? undefined;
+      return new Promise<Response>(() => {});
+    });
+    render(<App />);
+    typeQuestion();
+    fireEvent.click(screen.getByRole("button", { name: "Investigate" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+    expect(signal?.aborted).toBe(true);
+    expect(
+      screen.getByRole("button", { name: "Investigate" }),
+    ).toBeInTheDocument();
+  });
+});
+
+describe("verifiable evidence", () => {
+  function resultWithCitation(): InvestigationResultDTO {
+    return baseResult({
+      assessment: {
+        verdict: "high_risk",
+        summary: "Launch is materially threatened.",
+        blockers: [
+          {
+            title: "Client approval missing",
+            explanation: "Not confirmed.",
+            sources: [{ evidenceId: "slack:100.001", role: "corroborating" }],
+          },
+        ],
+      },
+      evidence: [
+        {
+          evidenceId: "slack:100.001",
+          source: "slack",
+          id: "100.001",
+          timestamp: "2026-09-12T10:00:00.000Z",
+          excerpt: 'U1: "<b>Client approval</b> is still missing."',
+        },
+      ],
+    });
+  }
+
+  it("shows what a cited source says and its date, as plain text", async () => {
+    mockFetch(async () =>
+      sseResponse([
+        { event: "investigation.started", data: { traceId: "t" } },
+        { event: "investigation.completed", data: resultWithCitation() },
+      ]),
+    );
+    render(<App />);
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /Are we still on track to launch Project Acme/,
+      }),
+    );
+    expect(
+      await screen.findByText('U1: "<b>Client approval</b> is still missing."'),
+    ).toBeInTheDocument();
+    expect(screen.getByText("12 Sep 2026")).toBeInTheDocument();
+    expect(document.querySelector(".evidence-excerpt b")).toBeNull();
+  });
+
+  it("shows the rationale, target project and evidence on a proposal", async () => {
+    mockFetch(async () =>
+      sseResponse([
+        { event: "investigation.started", data: { traceId: "t" } },
+        {
+          event: "investigation.completed",
+          data: {
+            ...resultWithCitation(),
+            proposedActionPresentation: {
+              proposalId: "p",
+              kind: "linear_create_issue",
+              title: "Chase the approval",
+              description: "Ask the account owner.",
+              priority: 2,
+              teamId: "team-1",
+              projectId: "project-1",
+              projectName: "Acme Website Migration",
+              rationale: "Nobody owns the approval yet.",
+              evidenceIds: ["slack:100.001"],
+              expiresAt: "2030-01-01T00:00:00.000Z",
+            },
+          },
+        },
+      ]),
+    );
+    render(<App />);
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /Are we still on track to launch Project Acme/,
+      }),
+    );
+    expect(
+      await screen.findByText("Nobody owns the approval yet."),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/this exact issue goes to Linear/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Project: Acme Website Migration"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("list", { name: "Evidence for this action" }),
+    ).toHaveTextContent(/Slack\s*message/);
+    // Already quoted under the blocker, so it isn't printed a second time.
+    expect(screen.getAllByText(/is still missing/)).toHaveLength(1);
+  });
+});
+
 describe("metadata and privacy", () => {
   it("renders accurate metadata and never leaks raw trace/tool payloads", async () => {
     mockFetch(async () => sseResponse(fullSSESequence()));
@@ -461,5 +679,133 @@ describe("metadata and privacy", () => {
 
     const html = document.body.innerHTML;
     expect(html).not.toMatch(/spanId|parentSpanId|"category":"tool"/);
+  });
+});
+
+describe("what the redesigned brief adds", () => {
+  function startSuggested() {
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /Are we still on track to launch Project Acme/,
+      }),
+    );
+  }
+
+  it("asks for a question instead of sending an empty one", () => {
+    const fetchMock = mockFetch(async () => sseResponse(fullSSESequence()));
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Investigate" }));
+    expect(screen.getByText("Type a question first.")).toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("shows the verdict as soon as the stream reports it, before the brief", async () => {
+    mockFetch(
+      async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              const ready: SSEMessage = {
+                event: "assessment.ready",
+                data: { verdict: "high_risk", blockerCount: 2 },
+              };
+              controller.enqueue(
+                new TextEncoder().encode(
+                  `event: ${ready.event}\ndata: ${JSON.stringify(ready.data)}\n\n`,
+                ),
+              );
+              // Left open: the run is still writing its brief.
+            },
+          }),
+          { status: 200 },
+        ),
+    );
+    render(<App />);
+    startSuggested();
+    expect(await screen.findByText(/2 blockers found/)).toBeInTheDocument();
+    expect(screen.getByText("High risk")).toBeInTheDocument();
+    expect(screen.queryByText("Investigation brief")).not.toBeInTheDocument();
+  });
+
+  it("states the age of the newest evidence on the verdict", async () => {
+    const yesterday = new Date(Date.now() - 86_400_000 - 1000).toISOString();
+    mockFetch(async () =>
+      sseResponse([
+        {
+          event: "investigation.completed",
+          data: baseResult({
+            assessment: { verdict: "at_risk", summary: "Tight.", blockers: [] },
+            evidence: [
+              {
+                evidenceId: "linear:OLD",
+                source: "linear",
+                id: "OLD",
+                timestamp: "2020-01-01T00:00:00.000Z",
+              },
+              {
+                evidenceId: "linear:NEW",
+                source: "linear",
+                id: "NEW",
+                timestamp: yesterday,
+              },
+            ],
+          }),
+        },
+      ]),
+    );
+    render(<App />);
+    startSuggested();
+    expect(await screen.findByText(/, 1 day old$/)).toBeInTheDocument();
+  });
+
+  it("doesn't invent an evidence age when nothing retrieved has a date", async () => {
+    mockFetch(async () => sseResponse(fullSSESequence()));
+    render(<App />);
+    startSuggested();
+    await screen.findByText("High risk");
+    expect(screen.queryByText("Newest evidence")).not.toBeInTheDocument();
+  });
+
+  it("removes the approve button once a proposal has expired, without calling the server", async () => {
+    const fetchMock = mockFetch(async () =>
+      sseResponse(
+        fullSSESequence({
+          proposedActionPresentation: {
+            proposalId: "p",
+            kind: "linear_create_issue",
+            title: "Chase the approval",
+            description: "Ask.",
+            priority: 2,
+            teamId: "t",
+            projectId: "project",
+            projectName: "Acme Website Migration",
+            rationale: "Why.",
+            evidenceIds: [],
+            expiresAt: new Date(Date.now() - 1000).toISOString(),
+          },
+        }),
+      ),
+    );
+    render(<App />);
+    startSuggested();
+    expect(
+      await screen.findByText("This proposal expired"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Approve and create issue" }),
+    ).not.toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns to the question form from a finished brief", async () => {
+    mockFetch(async () => sseResponse(fullSSESequence()));
+    render(<App />);
+    startSuggested();
+    fireEvent.click(
+      await screen.findByRole("button", { name: "New question" }),
+    );
+    expect(
+      screen.getByRole("textbox", { name: "Ask about this project" }),
+    ).toBeInTheDocument();
   });
 });

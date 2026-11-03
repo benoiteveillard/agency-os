@@ -106,14 +106,28 @@ export async function decideProposal(
   proposalId: string,
   decision: Decision,
 ): Promise<DecideResult | DecideFailure> {
-  const response = await fetch(
-    `/api/proposals/${encodeURIComponent(proposalId)}/decide`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ decision }),
-    },
-  );
+  let response: Response;
+  try {
+    response = await fetch(
+      `/api/proposals/${encodeURIComponent(proposalId)}/decide`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ decision }),
+      },
+    );
+  } catch {
+    // The request may or may not have reached the server, so this says nothing
+    // about whether the decision took effect. status 0 marks "no response".
+    return {
+      ok: false,
+      error: {
+        code: "network_error",
+        message: "Connection to the server was interrupted.",
+      },
+      status: 0,
+    };
+  }
   const body: unknown = await response.json().catch(() => undefined);
   // 502 is not enough on its own to tell success-with-failed-execution
   // (presentAudit still returns a full AuditDTO, with the error nested

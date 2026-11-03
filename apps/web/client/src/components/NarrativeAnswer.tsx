@@ -1,26 +1,27 @@
-import { useState } from "react";
+import { Icon } from "./Icon.js";
 
-/** Plain text, preserved whitespace — no Markdown rendering, so no
- * sanitization dependency is needed for model-authored text. */
-export function NarrativeAnswer({ answer }: { answer: string }) {
-  const [open, setOpen] = useState(false);
+/**
+ * Plain text, preserved whitespace: no Markdown rendering, so no sanitization
+ * dependency is needed for model-authored text. Collapsed only when blockers
+ * already carry the conclusion; otherwise this text is the result, and hiding
+ * it would leave an empty page.
+ */
+export function NarrativeAnswer({
+  answer,
+  isPrimary,
+}: {
+  answer: string;
+  isPrimary: boolean;
+}) {
+  if (!answer) return null;
+  if (isPrimary) return <div className="answer">{answer}</div>;
   return (
-    <section className="narrative">
-      <button
-        type="button"
-        className="narrative__toggle"
-        aria-expanded={open}
-        aria-controls="narrative-body"
-        onClick={() => setOpen((v) => !v)}
-      >
-        Detailed analysis
-        <span aria-hidden="true">{open ? "−" : "+"}</span>
-      </button>
-      {open && (
-        <div className="narrative__body" id="narrative-body">
-          {answer}
-        </div>
-      )}
-    </section>
+    <details className="disclosure-panel">
+      <summary>
+        Full analysis
+        <Icon name="CaretDown" />
+      </summary>
+      <div className="disclosure-panel__body answer--secondary">{answer}</div>
+    </details>
   );
 }

@@ -1,8 +1,9 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { investigate } from "@agency-os/agent";
 import type { ProductionRuntime } from "@agency-os/runtime";
 import {
   computeApprovalDigest,
+  type AuditLogEntry,
   type InvestigationResult,
   type ProposedAction,
 } from "@agency-os/shared";
@@ -30,6 +31,8 @@ function action(id = "proposal-1"): ProposedAction {
     kind: "linear_create_issue",
     args,
     rationale: "Launch is blocked",
+    evidenceIds: [],
+    targetProjectName: "Acme",
     proposedAt: new Date().toISOString(),
     approvalDigest: computeApprovalDigest("linear_create_issue", args),
   };
@@ -93,6 +96,12 @@ function setup(proposal = action(), store = new ProposalStore()) {
 }
 const decide = (id: string, decision: string) =>
   post(`/api/proposals/${id}/decide`, { decision });
+
+const originalWriteMode = process.env.DEMO_WRITE_MODE;
+afterEach(() => {
+  if (originalWriteMode === undefined) delete process.env.DEMO_WRITE_MODE;
+  else process.env.DEMO_WRITE_MODE = originalWriteMode;
+});
 
 describe("HTTP validation", () => {
   it("exposes health without initializing runtime", async () => {
@@ -303,22 +312,93 @@ describe("investigation transport", () => {
     );
     runtimes.forEach((rt) => expect(rt.close).toHaveBeenCalledTimes(1));
   });
-  it("finishes disconnected work, stores its proposal and closes its runtime", async () => {
+  it("cancels the run when the client disconnects, keeps no proposal and frees the slot", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
     const { app, run, rt } = setup();
+    let signal: AbortSignal | undefined;
     const gate = deferred<InvestigationResult>();
-    run.mockReturnValue(gate.promise);
+    run.mockImplementation(async (_q, _deps, options) => {
+      signal = options.signal;
+      return gate.promise;
+    });
     const response = await app.request(
       post("/api/investigate", { question: "q" }),
     );
     const reader = response.body!.getReader();
+    await vi.waitFor(() => expect(signal).toBeDefined());
     await reader.read();
     await reader.cancel();
+
+    await vi.waitFor(() => expect(signal!.aborted).toBe(true));
     gate.resolve(result(action()));
     await vi.waitFor(() => expect(rt.close).toHaveBeenCalledTimes(1));
+
     expect((await app.request(decide("proposal-1", "reject"))).status).toBe(
-      200,
+      404,
     );
-    expect(rt.createIssue).not.toHaveBeenCalled();
+    const next = await app.request(post("/api/investigate", { question: "b" }));
+    expect(next.status).toBe(200);
+    await next.text();
+    expect(
+      log.mock.calls.some(([line]) =>
+        String(line).includes("investigation.cancelled"),
+      ),
+    ).toBe(true);
+    log.mockRestore();
+  });
+  it("fails a run that exceeds its deadline, frees the slot and cleans up", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const rt = runtime();
+    const run = vi
+      .fn<typeof investigate>()
+      .mockImplementationOnce(
+        (_q, _deps, options) =>
+          new Promise((_resolve, reject) => {
+            options.signal!.addEventListener("abort", () =>
+              reject(options.signal!.reason),
+            );
+          }),
+      )
+      .mockResolvedValue(result());
+    const app = createWebApp({
+      createRuntime: async () => rt.value,
+      investigate: run,
+      pollMs: 1,
+      investigationTimeoutMs: 5,
+    });
+    const text = await (
+      await app.request(post("/api/investigate", { question: "q" }))
+    ).text();
+
+    expect(text).toContain("investigation.failed");
+    expect(rt.close).toHaveBeenCalledTimes(1);
+    const line = log.mock.calls
+      .map(([value]) => String(value))
+      .find((value) => value.includes('"investigation.failed"'));
+    expect(line).toContain('"category":"timeout"');
+    const next = await app.request(post("/api/investigate", { question: "b" }));
+    expect(next.status).toBe(200);
+    await next.text();
+    log.mockRestore();
+  });
+  it("closes a runtime that finishes starting after the run was cancelled", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const rt = runtime();
+    const slowStart = deferred<ProductionRuntime>();
+    const app = createWebApp({
+      createRuntime: () => slowStart.promise,
+      investigate: vi.fn<typeof investigate>(),
+      pollMs: 1,
+      investigationTimeoutMs: 5,
+    });
+    const text = await (
+      await app.request(post("/api/investigate", { question: "q" }))
+    ).text();
+    expect(text).toContain("investigation.failed");
+
+    slowStart.resolve(rt.value);
+    await vi.waitFor(() => expect(rt.close).toHaveBeenCalledTimes(1));
+    log.mockRestore();
   });
 });
 
@@ -371,12 +451,48 @@ describe("concurrency cap (Phase 7.4 public-demo abuse protection)", () => {
   });
 });
 
-describe("DEMO_WRITE_MODE=disabled (Phase 7.4 public-demo write policy)", () => {
-  const originalEnv = process.env.DEMO_WRITE_MODE;
+describe("concurrency cap configuration", () => {
+  const original = process.env.MAX_CONCURRENT_INVESTIGATIONS;
   afterEach(() => {
-    if (originalEnv === undefined) delete process.env.DEMO_WRITE_MODE;
-    else process.env.DEMO_WRITE_MODE = originalEnv;
+    if (original === undefined)
+      delete process.env.MAX_CONCURRENT_INVESTIGATIONS;
+    else process.env.MAX_CONCURRENT_INVESTIGATIONS = original;
   });
+
+  it.each(["abc", "", "0", "-1", "1.5"])(
+    "refuses to start with MAX_CONCURRENT_INVESTIGATIONS=%j rather than removing the cap",
+    (value) => {
+      process.env.MAX_CONCURRENT_INVESTIGATIONS = value;
+      expect(() => createWebApp()).toThrow(/MAX_CONCURRENT_INVESTIGATIONS/);
+    },
+  );
+
+  it("defaults to 1 when unset", () => {
+    delete process.env.MAX_CONCURRENT_INVESTIGATIONS;
+    expect(() => createWebApp()).not.toThrow();
+  });
+});
+
+describe("DEMO_WRITE_MODE (public-demo write policy)", () => {
+  it.each([undefined, "disabled", "true", "Enabled", ""])(
+    "records approval honestly but never writes or starts a runtime when set to %j",
+    async (value) => {
+      if (value === undefined) delete process.env.DEMO_WRITE_MODE;
+      else process.env.DEMO_WRITE_MODE = value;
+      const { app, store, rt, factory } = setup();
+      store.insert(action(), "trace-original");
+
+      const response = await app.request(decide("proposal-1", "approve"));
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        decision: "approved",
+        execution: { outcome: "execution_disabled" },
+      });
+      expect(rt.createIssue).not.toHaveBeenCalled();
+      expect(factory).not.toHaveBeenCalled();
+    },
+  );
 
   it("records approval honestly but never calls the real issueWriter", async () => {
     process.env.DEMO_WRITE_MODE = "disabled";
@@ -405,7 +521,7 @@ describe("DEMO_WRITE_MODE=disabled (Phase 7.4 public-demo write policy)", () => 
     expect(rt.createIssue).not.toHaveBeenCalled();
   });
 
-  it("any value other than the literal string 'disabled' leaves real writes enabled", async () => {
+  it("writes only with the exact value 'enabled'", async () => {
     process.env.DEMO_WRITE_MODE = "enabled";
     const { app, store, rt } = setup();
     store.insert(action(), "trace-original");
@@ -420,6 +536,10 @@ describe("DEMO_WRITE_MODE=disabled (Phase 7.4 public-demo write policy)", () => 
 });
 
 describe("approval HTTP boundary using real reviewAndExecute", () => {
+  beforeEach(() => {
+    process.env.DEMO_WRITE_MODE = "enabled";
+  });
+
   it("stores a canonical proposal and executes only its exact approved arguments", async () => {
     const { app, rt } = setup();
     const text = await (
@@ -449,7 +569,144 @@ describe("approval HTTP boundary using real reviewAndExecute", () => {
     );
     expect(rt.createIssue).not.toHaveBeenCalled();
     expect(rt.getIssue).not.toHaveBeenCalled();
+  });
+  it("records the decision before writing, then the result", async () => {
+    const order: string[] = [];
+    const rt = runtime();
+    rt.createIssue.mockImplementation(async () => {
+      order.push("write");
+      return { issueId: "issue-1" };
+    });
+    const append = vi.fn(async (entry: AuditLogEntry) => {
+      order.push(entry.event);
+    });
+    const store = new ProposalStore();
+    store.insert(action(), "trace-original");
+    const app = createWebApp({
+      createRuntime: async () => rt.value,
+      store,
+      auditLog: { append },
+    });
+
+    expect((await app.request(decide("proposal-1", "approve"))).status).toBe(
+      200,
+    );
+
+    expect(order).toEqual(["decision", "write", "result"]);
+    expect(append.mock.calls[0]![0]).toMatchObject({
+      event: "decision",
+      decision: "approve",
+      actor: "anonymous web visitor",
+      investigationTraceId: "trace-original",
+      proposal: { id: "proposal-1", rationale: "Launch is blocked" },
+    });
+    expect(append.mock.calls[1]![0]).toMatchObject({
+      event: "result",
+      audit: { decision: "approved", execution: { outcome: "success" } },
+    });
+  });
+  it("records rejections too", async () => {
+    const append = vi.fn(async () => {});
+    const store = new ProposalStore();
+    store.insert(action(), "trace-original");
+    const app = createWebApp({ store, auditLog: { append } });
+    await app.request(decide("proposal-1", "reject"));
+    expect(append).toHaveBeenCalledTimes(2);
+    expect(append).toHaveBeenCalledWith(
+      expect.objectContaining({ event: "decision", decision: "reject" }),
+    );
+  });
+  it("refuses to write when the decision can't be recorded", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const rt = runtime();
+    const store = new ProposalStore();
+    store.insert(action(), "trace-original");
+    const app = createWebApp({
+      createRuntime: async () => rt.value,
+      store,
+      auditLog: {
+        append: async () => {
+          throw new Error("disk full");
+        },
+      },
+    });
+
+    expect((await app.request(decide("proposal-1", "approve"))).status).toBe(
+      502,
+    );
+    expect(rt.createIssue).not.toHaveBeenCalled();
     expect(rt.close).toHaveBeenCalledTimes(1);
+    log.mockRestore();
+  });
+  it("still reports the outcome when only the result can't be recorded", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const rt = runtime();
+    const store = new ProposalStore();
+    store.insert(action(), "trace-original");
+    const append = vi
+      .fn<(entry: AuditLogEntry) => Promise<void>>()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("disk full"));
+    const app = createWebApp({
+      createRuntime: async () => rt.value,
+      store,
+      auditLog: { append },
+    });
+
+    const response = await app.request(decide("proposal-1", "approve"));
+
+    expect(response.status).toBe(200);
+    expect(rt.createIssue).toHaveBeenCalledOnce();
+    expect(log.mock.calls.join()).toContain("audit.result_write_failed");
+    log.mockRestore();
+  });
+  it("gives the trace its question, answer and outcome", async () => {
+    const onTrace = vi.fn(async () => {});
+    const rt = runtime();
+    const app = createWebApp({
+      createRuntime: async () => rt.value,
+      investigate: vi.fn<typeof investigate>().mockResolvedValue(result()),
+      onTrace,
+      pollMs: 1,
+    });
+    await (
+      await app.request(post("/api/investigate", { question: "  Why?  " }))
+    ).text();
+    await vi.waitFor(() => expect(onTrace).toHaveBeenCalledOnce());
+    expect(onTrace.mock.calls[0]!).toMatchObject([
+      expect.any(Array),
+      {
+        question: "Why?",
+        finalAnswer: "Launch is blocked",
+        resultMetadata: { evidenceCount: 0, proposedAction: false },
+      },
+    ]);
+  });
+  it("rejects even when the runtime can't start, since a rejection needs none", async () => {
+    const { app, store, factory } = setup();
+    store.insert(action(), "trace-original");
+    factory.mockRejectedValue(new Error("Missing LINEAR_API_KEY"));
+    const response = await app.request(decide("proposal-1", "reject"));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ decision: "rejected" });
+    expect(factory).not.toHaveBeenCalled();
+  });
+  it("logs a failed decision once, while keeping the cause out of the response", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { app, store, factory } = setup();
+    store.insert(action(), "trace-original");
+    factory.mockRejectedValue(new Error("MCP process failed to start"));
+
+    const first = await app.request(decide("proposal-1", "approve"));
+    await app.request(decide("proposal-1", "approve"));
+
+    expect(await first.text()).not.toContain("MCP process");
+    const logged = log.mock.calls
+      .map(([line]) => String(line))
+      .filter((line) => line.includes("proposal.decision_failed"));
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toContain("MCP process failed to start");
+    log.mockRestore();
   });
   it("locks concurrent approvals before the first external write finishes", async () => {
     const { app, store, rt } = setup();
@@ -492,6 +749,20 @@ describe("approval HTTP boundary using real reviewAndExecute", () => {
     });
     await app.request(decide("proposal-1", "approve"));
     expect(rt.createIssue).toHaveBeenCalledTimes(1);
+  });
+  it("fails closed when the runtime never finishes starting", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const store = new ProposalStore();
+    store.insert(action(), "trace-original");
+    const app = createWebApp({
+      createRuntime: () => new Promise<never>(() => {}),
+      store,
+      runtimeStartTimeoutMs: 5,
+    });
+    expect((await app.request(decide("proposal-1", "approve"))).status).toBe(
+      502,
+    );
+    log.mockRestore();
   });
   it("fails closed after runtime construction failure", async () => {
     const { app, store, factory } = setup();

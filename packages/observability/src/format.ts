@@ -45,6 +45,15 @@ export interface RunSummary {
   question: string;
   finalAnswer: string;
   resultMetadata: Record<string, AttributeValue>;
+  /**
+   * Written only by apps/eval-runner in fixture mode, where all content is
+   * synthetic, so graders can check what a run would have shown a human. Real
+   * runs never carry this: proposal and blocker text stays out of trace files.
+   */
+  evalArtifacts?: {
+    proposal?: { title: string; description: string; rationale: string };
+    blockerTitles: string[];
+  };
 }
 
 /**

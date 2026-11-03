@@ -15,6 +15,8 @@ export interface Evidence {
   id: string;
   timestamp?: string;
   url?: string;
+  /** Only on evidence a blocker or proposal cites. Untrusted text: render as plain text. */
+  excerpt?: string;
 }
 
 export interface AssessmentSourceRef {
@@ -43,7 +45,9 @@ export interface ProposalPresentation {
   priority: number;
   teamId: string;
   projectId: string;
+  projectName: string;
   rationale: string;
+  evidenceIds: string[];
   expiresAt: string;
 }
 

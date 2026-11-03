@@ -9,7 +9,7 @@
   "types": "./src/index.ts",
   "dependencies": {
     "@agency-os/integration-linear": "workspace:*",
-    "@modelcontextprotocol/sdk": "1.30.0"
+    "@modelcontextprotocol/sdk": "1.32.2"
   },
   "devDependencies": {
     "@agency-os/mcp-linear": "workspace:*"

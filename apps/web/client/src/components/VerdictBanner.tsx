@@ -1,47 +1,56 @@
-import type { Assessment } from "../types.js";
+import type { Assessment, AssessmentVerdict } from "../types.js";
+import { Icon } from "./Icon.js";
 
-const VERDICT_COPY: Record<
-  Assessment["verdict"],
-  { label: string; headline: string }
-> = {
-  on_track: {
-    label: "On track",
-    headline: "No unresolved issue currently threatens this launch.",
-  },
-  at_risk: {
-    label: "At risk",
-    headline: "Unresolved issues could threaten this launch.",
-  },
-  high_risk: {
-    label: "High risk",
-    headline: "This launch is materially threatened.",
-  },
-  insufficient_evidence: {
-    label: "Insufficient evidence",
-    headline: "There isn't enough evidence to judge launch readiness.",
-  },
+export const VERDICT_LABEL: Record<AssessmentVerdict, string> = {
+  on_track: "On track",
+  at_risk: "At risk",
+  high_risk: "High risk",
+  insufficient_evidence: "Insufficient evidence",
 };
 
-export function VerdictBanner({ assessment }: { assessment: Assessment }) {
-  const copy = VERDICT_COPY[assessment.verdict];
-  const blockerCount = assessment.blockers.length;
-  const uncertaintyCount = assessment.uncertainty?.length ?? 0;
+export function VerdictIcon({ verdict }: { verdict: AssessmentVerdict }) {
+  if (verdict === "on_track") return <Icon name="Check" />;
+  if (verdict === "insufficient_evidence") return <Icon name="Question" />;
+  return <Icon name="Warning" />;
+}
+
+function joinNames(names: string[]): string {
+  return names.length > 1
+    ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`
+    : (names[0] ?? "");
+}
+
+export function VerdictBanner({
+  assessment,
+  failedSources,
+  children,
+}: {
+  assessment: Assessment;
+  failedSources: string[];
+  /** The run summary: blockers, sources, evidence age. */
+  children: React.ReactNode;
+}) {
   return (
     <section
-      className={`verdict-banner verdict-banner--${assessment.verdict}`}
+      className={`verdict tone-${assessment.verdict} appear`}
       aria-label="Assessment verdict"
     >
-      <span className="verdict-banner__label">{copy.label}</span>
-      <h2 className="verdict-banner__headline">{copy.headline}</h2>
-      <p className="verdict-banner__summary">{assessment.summary}</p>
-      {(blockerCount > 0 || uncertaintyCount > 0) && (
-        <p className="verdict-banner__counts">
-          {blockerCount} blocker{blockerCount === 1 ? "" : "s"}
-          {uncertaintyCount > 0
-            ? ` · ${uncertaintyCount} uncertaint${uncertaintyCount === 1 ? "y" : "ies"}`
-            : ""}
+      <span className="verdict-label">
+        <VerdictIcon verdict={assessment.verdict} />
+        {VERDICT_LABEL[assessment.verdict]}
+      </span>
+      <h2 className="verdict__headline">{assessment.summary}</h2>
+      {failedSources.length > 0 && (
+        <p className="verdict__caveat">
+          <Icon name="Warning" />
+          <span>
+            {joinNames(failedSources)} couldn&rsquo;t be checked, so this
+            verdict doesn&rsquo;t account for{" "}
+            {failedSources.length > 1 ? "them" : "it"}.
+          </span>
         </p>
       )}
+      {children}
     </section>
   );
 }

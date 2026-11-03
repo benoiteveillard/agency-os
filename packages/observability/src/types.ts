@@ -19,7 +19,9 @@ export type SpanStatus = "unset" | "ok" | "error";
  */
 export type ErrorCategory =
   | "model_api"
+  | "model_incomplete"
   | "mcp_transport"
+  | "timeout"
   | "saas_api"
   | "tool_validation"
   | "digest_mismatch"

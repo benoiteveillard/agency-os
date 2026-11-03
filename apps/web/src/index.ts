@@ -7,6 +7,7 @@ import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { readFile } from "node:fs/promises";
 import { serializeTraceFile } from "@agency-os/observability";
+import { createFileAuditLog } from "@agency-os/runtime";
 import { exportTrace } from "@agency-os/observability-otel-export";
 import { createWebApp } from "./app.js";
 
@@ -40,21 +41,20 @@ if (!process.env.LINEAR_MCP_SERVER_ENTRY) {
 const port = Number(process.env.PORT ?? "3000");
 if (!Number.isInteger(port) || port < 1 || port > 65535)
   throw new Error("Invalid PORT");
+// Traces and the audit log live here. On a host with an ephemeral filesystem,
+// point it at a persistent volume, or both are lost on every deploy.
+const dataDir = process.env.AGENCY_DATA_DIR ?? repoRoot;
 const app = createWebApp({
-  onTrace: async (spans) => {
+  auditLog: createFileAuditLog(path.join(dataDir, ".audit/decisions.jsonl")),
+  onTrace: async (spans, summary) => {
     const traceId = spans[0]?.traceId;
     if (!traceId) return;
     try {
-      const directory = path.join(repoRoot, ".traces");
+      const directory = path.join(dataDir, ".traces");
       await mkdir(directory, { recursive: true });
       await writeFile(
         path.join(directory, `${traceId}.jsonl`),
-        serializeTraceFile(spans, {
-          traceId,
-          question: "",
-          finalAnswer: "",
-          resultMetadata: {},
-        }),
+        serializeTraceFile(spans, { traceId, ...summary }),
       );
     } catch {
       console.error(
