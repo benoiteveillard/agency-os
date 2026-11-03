@@ -28,6 +28,8 @@ export interface EvalRunnerConfig {
   approvalPolicy: "approve" | "reject" | "none";
   outputTracePath: string;
   model?: string;
+  /** ISO date the agent is told is today. Fixture data is dated, so fixture runs fix this. */
+  now?: string;
   /** Required when mode is "fixture"; ignored when mode is "live" (loadProjectRegistry() is used instead). */
   projectRegistry?: Record<string, ProjectRegistryEntry>;
   /** Required when mode is "fixture". */

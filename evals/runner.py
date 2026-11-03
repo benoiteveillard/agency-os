@@ -33,6 +33,12 @@ DEFAULT_FIXTURE_PROJECT_REGISTRY = {
     }
 }
 
+# The Monday of the launch week every fixture is written around (they target Friday
+# 2026-09-18). The agent is told today's date, so without a fixed clock these
+# scenarios would drift as real time passes: once the target is in the past, "on
+# track" stops being the right answer. Live mode keeps the real date.
+FIXTURE_NOW = "2026-09-14T12:00:00Z"
+
 JUDGE_GRADERS = {"task_success", "evidence_grounding", "adversarial_robustness", "failure_handling"}
 
 
@@ -79,13 +85,16 @@ def missing_env_vars(scenario: Scenario, mode: str) -> list[str]:
     return [v for v in required_env_vars(scenario, mode) if not os.environ.get(v)]
 
 
-def build_eval_runner_config(scenario: Scenario, mode: str) -> dict:
+def build_eval_runner_config(scenario: Scenario, mode: str, model: str | None = None) -> dict:
     config: dict = {"mode": mode, "approvalPolicy": scenario.approval_policy}
+    if model:
+        config["model"] = model
     if scenario.question:
         config["question"] = scenario.question
     if scenario.proposed_action:
         config["proposedAction"] = scenario.proposed_action
     if mode == "fixture":
+        config["now"] = FIXTURE_NOW
         config["fixtures"] = scenario.fixtures or {}
         config["projectRegistry"] = scenario.project_registry or DEFAULT_FIXTURE_PROJECT_REGISTRY
     return config
@@ -104,12 +113,12 @@ def _run_graders(scenario: Scenario, spans: list[dict], run_summary: dict | None
             results.append(fn(scenario, spans, run_summary))
         elif name == "tool_evidence_quality":
             results.append(fn(scenario, spans))
-        else:  # task_success, evidence_grounding, adversarial_robustness, assessment_correctness
+        else:  # task_success, evidence_grounding, adversarial_robustness, assessment_correctness, injection_containment
             results.append(fn(scenario, run_summary))
     return results
 
 
-def run_scenario(scenario: Scenario, trial_count: int, mode: str) -> ScenarioReport:
+def run_scenario(scenario: Scenario, trial_count: int, mode: str, model: str | None = None) -> ScenarioReport:
     if scenario.kind == "code_invariant":
         result = run_code_invariant(scenario)
         trial = TrialReport(
@@ -151,7 +160,7 @@ def run_scenario(scenario: Scenario, trial_count: int, mode: str) -> ScenarioRep
     trials: list[TrialReport] = []
     for i in range(trial_count):
         run_id = f"{scenario.id}-{mode}-{i}-{uuid.uuid4().hex[:8]}"
-        config = build_eval_runner_config(scenario, mode)
+        config = build_eval_runner_config(scenario, mode, model)
         result = run_eval_runner(config, run_id)
         spans, run_summary = load_trace(result.trace_path)
         grader_results = _run_graders(scenario, spans, run_summary)

@@ -152,14 +152,10 @@ silently burned).
 
 ---
 
-## KNOWN FINDING, NOT YET FIXED — repeated invalid action proposals can exhaust the tool-turn budget
+## Repeated invalid action proposals can exhaust the tool-turn budget (fixed, not yet confirmed live)
 
-Unlike every other entry in this file, this one has no **Fix**/**Result**
-yet — deliberately. Discovered during Experiment 2's (MAX_TOKENS
-truncation) post-implementation full-suite run, confirmed to have a
-different root cause from Experiment 2 and left open for its own
-failure → regression → fix cycle, per explicit instruction not to expand
-that change set to cover it.
+Discovered during Experiment 2's (MAX_TOKENS truncation) post-implementation
+full-suite run, with a different root cause from Experiment 2.
 
 **Observed.** `tool_failure_surfaced_honestly`, trial 2 of 3: the eval
 harness reported `"Investigation exceeded 8 tool-use turns without a final
@@ -200,21 +196,48 @@ after a run of repeated, recoverable tool-validation errors — a
 customer-facing gap distinct from (and not fixed by) the max_tokens
 truncation guard, since none of these five turns hit the token ceiling.
 
-**Root cause:** not yet determined. Two candidate mechanisms, not
-investigated: (a) something about the `rationale`-omission pattern makes
-the model repeat the identical mistake instead of correcting it after
-seeing the same validation error text three times in a row; (b) after
-turn 6's success, the model doesn't seem to register that its own
-proposal already went through, and attempts another.
+**Root cause.** Two separate gaps, the first inferred from the trace rather than
+reproduced. `propose_linear_issue` had no `strict` schema, so the model could
+send a call with no `rationale` and keep repeating it: the same failure shape
+`submit_assessment` had with `blockers` before Phase 7.3.2, and four identical
+validation errors with ordinary token counts fit it. Then the loop had no way to
+finish: every turn could spend itself on another tool call, so running out of
+turns discarded everything gathered.
 
-**Fix:** none yet — explicitly deferred. Do not change the tool loop,
-retry policy, proposal schema, prompt, or turn budget for this finding
-until it has its own investigation.
+**Fix.** `propose_linear_issue` is now `strict`. The last turn sends `tool_choice:
+{type: "none"}`, and the turn before it adds an instruction to answer from the
+evidence in hand and say what couldn't be retrieved, so a run always ends in an
+answer. Changing `tool_choice` keeps the conversation valid for preserved thinking.
 
-**Evaluation added:** none yet. Candidate for a future scenario:
-force-reproduce the missing-`rationale` validation error deterministically
-(e.g. a fixture/prompt combination proven to trigger it, or a scripted
-tool-response injection) and assert the loop still reaches a final answer
-without exhausting `MAX_TOOL_TURNS`.
+**Evaluation added.** `tool_turn_budget_reaches_answer`, a `code_invariant`
+scenario running a scripted model through the real loop, because the live failure
+can't be triggered on demand.
 
-**Result:** open.
+**Result.** The loop is fixed and the regression passes against the scripted model.
+Whether `strict` stops the repeated proposals against the real model is unconfirmed:
+no live trial could run (see "Comparing models" in `docs/evaluation.md`).
+
+---
+
+## CI status read as green when nothing proved it
+
+**Observed.** Found by audit, not by a live run: `summarizeWorkflowRuns` returned
+`success` for any completed run whose conclusion wasn't in its list of failures,
+including `startup_failure`, `stale`, a commit whose only workflow was `skipped`,
+and any value GitHub adds later.
+
+**Expected.** GitHub is the authoritative source for CI, and the agent states it as
+fact, so `success` has to mean a run actually succeeded.
+
+**Root cause.** A denylist with success as the default branch.
+
+**Fix.** Success now needs at least one `success` run and no unrecognized
+conclusion; everything else that isn't failing or pending is `unknown`.
+`startup_failure` counts as failing.
+
+**Evaluation added.** Unit tests in `workflow-run-status.test.ts`. The reusable
+pattern: **when a value feeds a claim stated as fact, allowlist what proves it**. The
+same mistake was in the runner's handling of `stop_reason`, where anything without a
+tool call was a finished answer, so a refusal returned an empty success.
+
+**Result.** Fixed, verified by tests.

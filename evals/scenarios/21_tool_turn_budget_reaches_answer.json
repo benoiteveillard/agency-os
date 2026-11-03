@@ -1,0 +1,7 @@
+{
+  "id": "tool_turn_budget_reaches_answer",
+  "kind": "code_invariant",
+  "description": "Regression for the open failure in docs/failures.md (trace 17b06d2e8fc8cc89dc93adddbdfc0dc1): tool-validation retries that use up every turn must still end in a final answer, not a run with no answer. Delegated because it needs a scripted model: the failure can't be reproduced on demand against the real one.",
+  "delegate_file": "packages/agent/src/investigate.test.ts",
+  "delegate_test": "still reaches a final answer when retries use up every tool turn"
+}

@@ -2057,3 +2057,69 @@ The project workspace now uses the available width instead of a single-project s
 Progress labels now distinguish checking, checked and failed sources. Initial source labels describe project data sources rather than implying a verified connection. Approval copy accounts for disabled external execution. A review also found that retrying a `proposal_in_progress` response always submitted approval, including after rejection: the client now retains and retries the original decision, with regressions for both choices. No runtime, transport, approval policy or integration changes were made.
 
 Validation uses the deterministic suite and isolated local browser fixtures, with no live agent calls. The fixture server and its sample data are not part of the application build. Desktop and narrow viewport rendering were inspected locally. This change does not publish the disabled public Railway endpoint.
+
+## Audit follow-up (2026-11-02)
+
+An audit found ways the agent could give a wrong conclusion without saying so, and
+gaps in write safety and traceability. Most fixes are direct: see `docs/failures.md`
+and the tests. These changes have trade-offs worth recording.
+
+**Writes are opt-in in `apps/web`.** Only `DEMO_WRITE_MODE=enabled` writes. Before,
+forgetting the variable left writes open to any visitor holding a `proposalId`.
+Trade-off: local development with real writes now has to set it. The CLI keeps
+writing after its own prompt, since a person at a terminal has already chosen to.
+
+**A disconnect cancels the run.** This reverses the earlier "Choice B", which
+finished the run for trace completeness and only existed because the agent had no
+cancellation signal. Trade-off: a dropped connection loses the work, including a
+proposal. The public demo's cost exposure outweighs that, and a retry is one click.
+
+**Cited evidence now shows an excerpt to the reader.** This changes the earlier
+boundary that kept all evidence text out of browser responses. The README asks for
+inspectable evidence, and a chip reading `slack 1789000000.000100` with no link
+couldn't be checked by anyone. Options considered: links only (Slack needs a
+configured workspace URL and a login, so a reader still couldn't check it), or all
+evidence (more retrieved data than the conclusion needs). Chosen: only evidence a
+blocker or proposal cites, capped at 280 characters, as plain text. Trade-off:
+retrieved text, including injected text, now reaches the browser. That's acceptable
+with synthetic data and no secrets in the demo sources.
+
+**Proposals must cite evidence.** `evidenceIds` is required and validated against
+what the run retrieved, like an assessment's sources. It sits outside the approval
+digest because it explains the action and doesn't change what executes.
+
+**The audit log is a local JSONL file, and it fails closed.** A database would be
+unjustified for one replica. The `decision` entry is written before execution and a
+failure to write it refuses the action: an unrecorded write is worse than a refused
+one. Trade-off: it needs a persistent volume on Railway, or it's lost on every
+deploy, and it can't name who approved, because the web app has no login. It records
+"anonymous web visitor", which is the honest answer.
+
+**The default model is `claude-sonnet-5-5`.** It passed the same trials as Sonnet 5 at
+about half the latency: see "Comparing models" in `docs/evaluation.md`. The runner uses the
+beta Messages endpoint for its server-side fallback, and the SDK is on 1.x, which sends API
+version `2026-10-21` and the key as `Authorization: Bearer`. Trade-off: the production path
+now depends on a beta header, and the sample behind the move is small.
+
+**Revisit when:** real customer data replaces synthetic data (excerpts then need
+authentication and a review of what reaches the browser); the demo gets users who can
+log in (the audit log can then name them).
+
+## UI review after the audit (2026-11-02)
+
+Reviewed every state with local fixtures, no live agent calls. Three defects mattered
+more than styling: a question with no assessment rendered an empty page, because the
+answer sat behind a collapsed "Detailed analysis"; a failed source was a small gray note
+beside a confident verdict; and a failed run left its spinner turning.
+
+The answer now shows directly whenever no blockers carry the conclusion. A failed source
+is stated on the verdict itself, and all three sources are listed, so one the agent never
+consulted reads "not checked" instead of being absent. Running investigations show elapsed
+time and can be cancelled, which also stops the billed run on the server. Enter submits;
+Shift+Enter adds a line.
+
+Removed because they stated things nobody had verified: the hard-coded "Friday, September
+18" launch date, the breadcrumb that led nowhere, the invented avatar and the glyphs posing
+as provider logos. The verdict's fixed headline is gone too, so the model's summary leads.
+Trade-off: that heading's length now depends on the model. Slack evidence shows "Slack
+message" and its date, since a ts means nothing to a reader; the ts stays in the evidence ID.

@@ -28,6 +28,15 @@ export interface ProposedAction {
   kind: "linear_create_issue";
   args: Readonly<LinearCreateIssueArgs>;
   rationale: string;
+  /**
+   * The evidence this proposal rests on, as "<source>:<id>". Validated against
+   * what the run actually retrieved, the same way an assessment's sources are,
+   * and shown to the human deciding. Outside the digest: it explains the action
+   * but doesn't change what executes.
+   */
+  evidenceIds: readonly string[];
+  /** The project args.projectId belongs to, resolved from the registry for display. */
+  targetProjectName: string;
   proposedAt: string;
   /**
    * sha256 hex digest over canonical JSON of exactly {kind, args} — the
@@ -52,6 +61,7 @@ export interface AuditRecord {
   args: Readonly<LinearCreateIssueArgs>;
   approvalDigest: string;
   rationale: string;
+  evidenceIds: readonly string[];
   proposedAt: string;
   decision: "approved" | "rejected";
   decidedAt: string;
@@ -72,6 +82,34 @@ export interface AuditRecord {
     /** From reading the issue back after creation, not from the write response. */
     createdIssue?: CreatedIssueSummary;
   };
+}
+
+/**
+ * One line of the durable audit trail. Two entries per decision: "decision" is
+ * written before anything executes, so a crash mid-write still leaves a record
+ * of what was approved and by whom, and "result" records how it ended.
+ */
+export type AuditLogEntry =
+  | {
+      event: "decision";
+      at: string;
+      decision: "approve" | "reject";
+      /** Who decided, as far as this deployment knows. The web app has no login, so it can't name a person. */
+      actor: string;
+      proposal: ProposedAction;
+      investigationTraceId: string;
+      approvalTraceId: string;
+    }
+  | {
+      event: "result";
+      at: string;
+      audit: AuditRecord;
+      investigationTraceId: string;
+      approvalTraceId: string;
+    };
+
+export interface AuditLog {
+  append(entry: AuditLogEntry): Promise<void>;
 }
 
 /** Read-only-write port: the one write capability this phase adds. */

@@ -22,6 +22,8 @@ function makeAction(overrides: Partial<ProposedAction> = {}): ProposedAction {
     id: "proposal-1",
     kind: "linear_create_issue",
     args,
+    evidenceIds: ["linear:JUS-18"],
+    targetProjectName: "Acme",
     rationale:
       "Deployment rehearsal is blocked on missing credentials with no tracking issue.",
     proposedAt: "2026-09-14T00:00:00.000Z",
@@ -63,6 +65,44 @@ function makeDeps(
     ...overrides,
   };
 }
+
+describe("reviewAndExecute external call limits", () => {
+  it("reports a write that times out as unconfirmed, since it may have landed", async () => {
+    const tracer = new Tracer();
+    const args = {
+      teamId: "t",
+      projectId: "p",
+      title: "T",
+      description: "D",
+      priority: 0,
+      id: "i",
+    };
+    const audit = await reviewAndExecute(
+      {
+        id: "a",
+        kind: "linear_create_issue",
+        args,
+        rationale: "R",
+        evidenceIds: [],
+        targetProjectName: "Acme",
+        proposedAt: "2026-01-01T00:00:00.000Z",
+        approvalDigest: computeApprovalDigest("linear_create_issue", args),
+      },
+      {
+        promptForApproval: async () => true,
+        issueWriter: { createIssue: () => new Promise(() => {}) },
+        issueTracker: {} as never,
+        tracer,
+        parentSpan: tracer.startSpan("agent.run", "run"),
+        externalCallTimeoutMs: 1,
+      },
+    );
+    expect(audit.execution).toMatchObject({
+      outcome: "executed_unconfirmed",
+      error: expect.stringContaining("timed out"),
+    });
+  });
+});
 
 describe("reviewAndExecute", () => {
   it("does not call issueWriter when rejected", async () => {

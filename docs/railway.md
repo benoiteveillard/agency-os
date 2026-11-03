@@ -66,16 +66,16 @@ chat.
 
 ### Required integration secrets
 
-| Variable                 | Purpose                                    | Same name/value as local `.env`? |
-| ------------------------ | ------------------------------------------ | -------------------------------- |
-| `ANTHROPIC_API_KEY`      | Claude API access                          | yes                              |
-| `LINEAR_API_KEY`         | Linear read access (MCP subprocess)        | yes                              |
-| `LINEAR_API_KEY_WRITE`   | Linear issue creation (approval path only) | yes                              |
-| `GITHUB_TOKEN`           | GitHub PR/CI read access                   | yes                              |
-| `SLACK_BOT_TOKEN`        | Slack read access                          | yes                              |
-| `LINEAR_PROJECT_ID_ACME` | Project registry entry                     | yes                              |
-| `LINEAR_TEAM_ID_ACME`    | Project registry entry                     | yes                              |
-| `SLACK_CHANNEL_ID_ACME`  | Project registry entry                     | yes                              |
+| Variable                 | Purpose                                                           | Same name/value as local `.env`? |
+| ------------------------ | ----------------------------------------------------------------- | -------------------------------- |
+| `ANTHROPIC_API_KEY`      | Claude API access                                                 | yes                              |
+| `LINEAR_API_KEY`         | Linear read access (MCP subprocess)                               | yes                              |
+| `LINEAR_API_KEY_WRITE`   | Linear issue creation; only needed with `DEMO_WRITE_MODE=enabled` | yes                              |
+| `GITHUB_TOKEN`           | GitHub PR/CI read access                                          | yes                              |
+| `SLACK_BOT_TOKEN`        | Slack read access                                                 | yes                              |
+| `LINEAR_PROJECT_ID_ACME` | Project registry entry                                            | yes                              |
+| `LINEAR_TEAM_ID_ACME`    | Project registry entry                                            | yes                              |
+| `SLACK_CHANNEL_ID_ACME`  | Project registry entry                                            | yes                              |
 
 ### Required runtime configuration
 
@@ -83,14 +83,17 @@ chat.
 | ----------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `HOST`            | `0.0.0.0`       | The server defaults to `127.0.0.1` (a deliberate local-dev safety default) — Railway's proxy cannot reach a loopback-only bind. **Without this set, the deploy will build and pass a health check that never routes real traffic; verify it explicitly, not just that the build succeeded.** |
 | `PORT`            | — (leave unset) | Railway injects this itself; the app already reads `process.env.PORT`. Do not set manually.                                                                                                                                                                                                  |
-| `DEMO_WRITE_MODE` | `disabled`      | Public-demo write-safety policy — see decisions.md. **Required for a safe public deploy**; omitting it leaves real Linear writes reachable by any visitor who gets a `proposalId`.                                                                                                           |
+| `DEMO_WRITE_MODE` | `disabled`      | Public-demo write-safety policy — see decisions.md. Real writes happen only with the exact value `enabled`, so leaving it unset is also safe. Never set `enabled` on a public deploy: any visitor who gets a `proposalId` could write to Linear.                                             |
 
 ### Optional runtime configuration
 
-| Variable                        | Default if unset          | Purpose                                                                     |
-| ------------------------------- | ------------------------- | --------------------------------------------------------------------------- |
-| `LINEAR_MCP_SERVER_ENTRY`       | self-computed (see above) | Override only for a non-standard layout.                                    |
-| `MAX_CONCURRENT_INVESTIGATIONS` | `1`                       | Global in-process concurrency cap on `/api/investigate` — see decisions.md. |
+| Variable                        | Default if unset          | Purpose                                                                                            |
+| ------------------------------- | ------------------------- | -------------------------------------------------------------------------------------------------- |
+| `LINEAR_MCP_SERVER_ENTRY`       | self-computed (see above) | Override only for a non-standard layout.                                                           |
+| `MAX_CONCURRENT_INVESTIGATIONS` | `1`                       | Global in-process concurrency cap on `/api/investigate` — see decisions.md.                        |
+| `INVESTIGATION_TIMEOUT_MS`      | `240000`                  | Hard limit on one investigation.                                                                   |
+| `AGENCY_DATA_DIR`               | repo root                 | Where `.traces/` and `.audit/` go. Point it at a Railway volume, or both are lost on every deploy. |
+| `SLACK_WORKSPACE_URL`           | none                      | Makes Slack evidence link to the message, e.g. `https://acme.slack.com`.                           |
 
 ### Optional observability
 
@@ -122,12 +125,12 @@ by design, not bugs:
 ## Public write-safety policy
 
 See "Phase 7.4" in `docs/decisions.md` for the full threat model and
-design. Summary: `DEMO_WRITE_MODE=disabled` makes a real approval get
+design. Summary: any `DEMO_WRITE_MODE` other than `enabled` makes a real approval get
 recorded honestly (a human did approve) but never calls the real
 `IssueWriter` — the UI shows "Approval recorded. External execution is
 disabled in the public demo." instead of pretending a Linear issue was
-created. The real write path (`DEMO_WRITE_MODE` unset) remains fully
-testable locally and via the CLI, unaffected.
+created. The real write path needs `DEMO_WRITE_MODE=enabled` locally, and stays
+available through the CLI, which doesn't read this variable.
 
 ## Abuse protection
 

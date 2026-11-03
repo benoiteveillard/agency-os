@@ -15,6 +15,8 @@ export interface ProjectRegistryEntry {
   githubOwner: string;
   githubRepo: string;
   slackChannelId: string;
+  /** e.g. https://acme.slack.com. Optional: without it, Slack evidence has no link. */
+  slackWorkspaceUrl?: string;
 }
 
 function requireEnv(name: string): string {
@@ -41,6 +43,7 @@ export function loadProjectRegistry(): Record<string, ProjectRegistryEntry> {
       githubOwner: "os-agency-fake",
       githubRepo: "acme-website-migration",
       slackChannelId: requireEnv("SLACK_CHANNEL_ID_ACME"),
+      slackWorkspaceUrl: process.env.SLACK_WORKSPACE_URL,
     },
   };
 }
