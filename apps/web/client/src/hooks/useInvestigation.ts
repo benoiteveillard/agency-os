@@ -32,6 +32,11 @@ export type InvestigationState =
       traceId?: string;
       activities: Activity[];
       preliminary?: PreliminaryVerdict;
+      /**
+       * The model's text as it's written. A draft only: it's replaced by the
+       * structured result when the run completes.
+       */
+      draft: string;
       /** Internal: distinguishes this run from a superseded one whose
        * in-flight SSE messages may still be arriving after abort() is
        * called but before the stream actually stops. */
@@ -107,6 +112,7 @@ function reducer(
           phase: "running",
           question: action.question,
           activities: [],
+          draft: "",
           runId: action.runId,
         }
       : { phase: "idle" };
@@ -140,6 +146,10 @@ function reducer(
   switch (message.event) {
     case "investigation.started":
       return { ...state, traceId: message.data.traceId };
+    case "answer.reset":
+      return state.draft ? { ...state, draft: "" } : state;
+    case "answer.delta":
+      return { ...state, draft: state.draft + message.data.text };
     case "source.started":
       return {
         ...state,

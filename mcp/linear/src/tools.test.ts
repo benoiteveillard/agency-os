@@ -35,6 +35,7 @@ const fakeProjectIssues: ProjectIssuesResult = {
     health: "atRisk",
   },
   issues: [fakeIssue],
+  truncated: false,
 };
 
 /**

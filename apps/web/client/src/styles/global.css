@@ -539,6 +539,22 @@ button {
   color: var(--muted);
 }
 
+.activity__draft {
+  display: grid;
+  gap: 4px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.activity__draft-label {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--muted);
+}
+.answer--draft {
+  font-size: 14px;
+  line-height: 20px;
+}
+
 /* Verdict */
 .tone-high_risk {
   --tone-fg: var(--risk-fg);

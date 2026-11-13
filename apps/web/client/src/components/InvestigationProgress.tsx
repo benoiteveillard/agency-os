@@ -42,12 +42,15 @@ function sourceHint(
 export function InvestigationProgress({
   activities,
   preliminary,
+  draft,
   stopped = false,
   onCancel,
 }: {
   activities: Activity[];
   /** The verdict, once known, while the rest of the brief is still being written. */
   preliminary?: PreliminaryVerdict;
+  /** The answer as it's being written. */
+  draft?: string;
   /** The run has ended without a result: nothing here is still in progress. */
   stopped?: boolean;
   onCancel?: () => void;
@@ -144,6 +147,14 @@ export function InvestigationProgress({
             Writing the brief.
           </span>
         </p>
+      )}
+      {draft && !stopped && (
+        // Plain text, like the final answer. aria-live="off": announcing a
+        // draft word by word would drown out the progress updates above.
+        <div className="activity__draft" aria-live="off">
+          <p className="activity__draft-label">Draft</p>
+          <div className="answer answer--draft">{draft}</div>
+        </div>
       )}
     </section>
   );

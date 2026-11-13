@@ -74,6 +74,8 @@ order only: no reconnection, replay or Last-Event-ID support.
 | `source.completed`        | `{activityId,source,ok}`                                | That span ended, successfully or with error.                    |
 | `assessment.started`      | `{activityId}`                                          | An actual model turn or structured assessment submission began. |
 | `assessment.completed`    | `{activityId,ok}`                                       | The corresponding span ended.                                   |
+| `answer.reset`            | `{}`                                                    | Discard the draft: a new model turn or a fallback model began.  |
+| `answer.delta`            | `{text}`                                                | Text to append to the draft answer.                             |
 | `assessment.ready`        | `{verdict,blockerCount}`                                | Valid structured assessment available in final result.          |
 | `action.proposed`         | Proposal presentation below                             | Canonical proposal is now stored.                               |
 | `investigation.completed` | Result presentation below                               | Terminal success.                                               |
@@ -89,6 +91,13 @@ claim of exact tool-call arrival time. Nothing fabricates completed work.
 Model turns are assessment activity, never an exposure of internal reasoning.
 Unknown spans are ignored. `assessment.ready` and `action.proposed` are optional
 and occur after the agent returns, before terminal completion.
+
+`answer.reset` and `answer.delta` carry the model's text as it streams, so the
+reader isn't left with only progress rows for a minute or more. They're
+buffered and sent with each poll, one coalesced delta per poll, in the order
+the model wrote them. The draft is display only: the client replaces it with
+the result on `investigation.completed`, and drops it on failure. It is plain
+text, rendered without Markdown, like the final answer.
 
 ### Final result
 

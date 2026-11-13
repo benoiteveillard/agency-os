@@ -31,6 +31,8 @@ export interface WorkflowRunDetail {
 export interface WorkflowRunStatusSummary {
   status: WorkflowRunOverallStatus;
   runs: WorkflowRunDetail[];
+  /** Set when more runs exist for this commit than were fetched. */
+  truncated?: boolean;
 }
 
 const FAILING_CONCLUSIONS = new Set([

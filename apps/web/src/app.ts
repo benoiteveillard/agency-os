@@ -4,6 +4,7 @@ import { bodyLimit } from "hono/body-limit";
 import {
   investigate,
   reviewAndExecute,
+  type AnswerTextUpdate,
   type ReviewAndExecuteDeps,
 } from "@agency-os/agent";
 import {
@@ -297,6 +298,19 @@ export function createWebApp(options: WebOptions = {}) {
             new Error("Investigation cancelled: client disconnected."),
           );
         });
+        // Answer text is buffered and flushed with the progress events, so
+        // every SSE write stays on one ordered path and deltas are coalesced
+        // per poll instead of one event per token.
+        let answerReset = false;
+        let answerText = "";
+        const onAnswerText = (update: AnswerTextUpdate) => {
+          if (update.type === "reset") {
+            answerReset = true;
+            answerText = "";
+          } else {
+            answerText += update.text;
+          }
+        };
         let sequence = 0;
         const send = async (event: string, data: unknown) => {
           if (disconnected) return;
@@ -326,6 +340,7 @@ export function createWebApp(options: WebOptions = {}) {
                 tracer,
                 parentSpan: root,
                 signal: cancellation.signal,
+                onAnswerText,
               },
             );
             cancellation.signal.throwIfAborted();
@@ -401,16 +416,27 @@ export function createWebApp(options: WebOptions = {}) {
           settled = true;
           activeInvestigations--;
         });
-        while (!settled && !disconnected) {
+        const flush = async () => {
           for (const event of mapper.poll(tracer.getSpans()))
             await send(event.event, event.data);
+          if (answerReset) {
+            answerReset = false;
+            await send("answer.reset", {});
+          }
+          if (answerText) {
+            const text = answerText;
+            answerText = "";
+            await send("answer.delta", { text });
+          }
+        };
+        while (!settled && !disconnected) {
+          await flush();
           await new Promise((resolve) =>
             setTimeout(resolve, options.pollMs ?? 50),
           );
         }
         const result = await task;
-        for (const event of mapper.poll(tracer.getSpans()))
-          await send(event.event, event.data);
+        await flush();
         if (!result) {
           await send("investigation.failed", {
             error: {

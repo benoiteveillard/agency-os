@@ -2123,3 +2123,34 @@ Removed because they stated things nobody had verified: the hard-coded "Friday, 
 as provider logos. The verdict's fixed headline is gone too, so the model's summary leads.
 Trade-off: that heading's length now depends on the model. Slack evidence shows "Slack
 message" and its date, since a ts means nothing to a reader; the ts stays in the evidence ID.
+
+## Second audit follow-up (2026-11-13)
+
+**Truncated reads are reported, not hidden.** Linear (10 pages, 25 relations per issue
+per direction), Slack (3 pages) and GitHub (100 open PRs, 20 workflow runs) all stop at a
+cap. Before, a capped list reached the model looking complete, so "no blocker found"
+could rest on half a project. Each read now returns `truncated`; the model sees it in the
+tool result and the system prompt tells it to say so, and the span gets
+`truncated: true`. The Slack and GitHub ports now return an object instead of a bare
+array. Trade-off: every implementation and fixture of those ports changed shape, and the
+model-visible Slack and PR results are now objects. No eval covers a truncated read yet.
+
+**Linear issues load in one GraphQL request per page.** The SDK's lazy models cost one
+request for each issue's state, two for its relations and one per related issue: 60+
+requests for the demo project. A single query with nested relations measured 1 request,
+331 ms, for 21 issues live. The response is validated with zod, and the same schemas
+check what the MCP client receives from the server process. Trade-off: the query text is
+ours to keep in step with Linear's schema (fields verified against `@linear/sdk` 95.0.0
+typings), and nested connections raise query complexity, which is why relations are
+capped at 25.
+
+**Model turns are streamed.** The runner uses `client.beta.messages.stream` and still
+works on the complete message (`finalMessage()`), so the tool loop, stop-reason handling
+and fallback handling are unchanged. Text reaches the browser as a draft through
+`answer.reset` / `answer.delta`. A draft resets on each new turn and on a `fallback` block,
+since the declined model's partial text no longer counts. Trade-off: the reader briefly
+sees text the final answer may not keep, including a tool-using turn's lead-in. The text
+is the same model output the result already shows, so no new data reaches the browser.
+
+**Revisit when:** a project outgrows the caps (paginate relations instead of capping), or
+the draft confuses readers in practice.

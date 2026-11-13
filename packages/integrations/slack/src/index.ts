@@ -1,6 +1,7 @@
 export type {
   SlackMessageSource,
   SlackMessage,
+  SlackMessagePage,
   SlackApiMessage,
 } from "./message-source.js";
 export {

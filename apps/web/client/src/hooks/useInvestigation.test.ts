@@ -44,6 +44,46 @@ describe("useInvestigation", () => {
     });
   });
 
+  it("builds the draft from answer deltas and clears it on reset", async () => {
+    const messages: SSEMessage[] = [
+      { event: "investigation.started", data: { traceId: "t1" } },
+      { event: "answer.delta", data: { text: "Checking " } },
+      { event: "answer.delta", data: { text: "Slack." } },
+      { event: "answer.reset", data: {} },
+      { event: "answer.delta", data: { text: "Launch is " } },
+      { event: "answer.delta", data: { text: "blocked." } },
+    ];
+    const text = messages
+      .map((m) => `event: ${m.event}\ndata: ${JSON.stringify(m.data)}\n\n`)
+      .join("");
+    // Left open, as during a real run, so the draft is what the reader sees.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode(text));
+              },
+            }),
+          ),
+      ),
+    );
+    const { result } = renderHook(() => useInvestigation());
+    act(() => {
+      void result.current.run("q");
+    });
+
+    await waitFor(() =>
+      expect(result.current.state).toMatchObject({
+        phase: "running",
+        draft: "Launch is blocked.",
+      }),
+    );
+    act(() => result.current.reset());
+  });
+
   it("collapses repeated source activity from multiple tool calls into one row", async () => {
     vi.stubGlobal(
       "fetch",

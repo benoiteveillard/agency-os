@@ -21,6 +21,7 @@ describe("FixtureIssueTracker", () => {
     await expect(tracker.listProjectIssues("p1")).resolves.toEqual({
       project,
       issues: [],
+      truncated: false,
     });
   });
 

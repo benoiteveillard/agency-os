@@ -1,47 +1,58 @@
-import { LinearClient, type Issue } from "@linear/sdk";
+import { LinearClient } from "@linear/sdk";
+import { z } from "zod";
 import { isOverdue } from "./overdue.js";
 
-export interface RelatedIssueRef {
-  id: string;
-  identifier: string;
-  title: string;
-}
+export const relatedIssueRefSchema = z.object({
+  id: z.string(),
+  identifier: z.string(),
+  title: z.string(),
+});
+export type RelatedIssueRef = z.infer<typeof relatedIssueRefSchema>;
 
-export interface ProjectIssue {
-  id: string;
-  identifier: string;
-  title: string;
-  url: string;
-  state: string;
-  stateType: string;
-  priorityLabel: string;
-  dueDate: string | null;
-  overdue: boolean;
-  updatedAt: string;
+export const projectIssueSchema = z.object({
+  id: z.string(),
+  identifier: z.string(),
+  title: z.string(),
+  url: z.string(),
+  state: z.string(),
+  stateType: z.string(),
+  priorityLabel: z.string(),
+  dueDate: z.string().nullable(),
+  overdue: z.boolean(),
+  updatedAt: z.string(),
   /** Issues this one must wait on (explicit Linear `blocks` relation, incoming). */
-  blockedBy: RelatedIssueRef[];
+  blockedBy: z.array(relatedIssueRefSchema),
   /** Issues this one is holding up (explicit Linear `blocks` relation, outgoing). */
-  blocks: RelatedIssueRef[];
-}
+  blocks: z.array(relatedIssueRefSchema),
+});
+export type ProjectIssue = z.infer<typeof projectIssueSchema>;
 
-export interface ProjectSummary {
-  id: string;
-  name: string;
-  url: string;
-  targetDate: string | null;
+export const projectSummarySchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  url: z.string(),
+  targetDate: z.string().nullable(),
   /** Linear's own health signal for the project: "onTrack" | "atRisk" | "offTrack", if set. */
-  health: string | null;
-}
+  health: z.string().nullable(),
+});
+export type ProjectSummary = z.infer<typeof projectSummarySchema>;
 
-export interface ProjectIssuesResult {
-  project: ProjectSummary;
-  issues: ProjectIssue[];
-}
+export const projectIssuesResultSchema = z.object({
+  project: projectSummarySchema,
+  issues: z.array(projectIssueSchema),
+  /**
+   * True when a page cap was hit, so issues (or an issue's relations) exist
+   * that this result doesn't contain. The model is told, rather than left to
+   * read a partial list as the whole project.
+   */
+  truncated: z.boolean(),
+});
+export type ProjectIssuesResult = z.infer<typeof projectIssuesResultSchema>;
 
 /**
- * Read-only port for issue-tracker data. LinearIssueTracker (direct
- * @linear/sdk) and McpLinearIssueTracker (via the custom Linear MCP server,
- * see mcp/linear) both implement this; agent/tool code depends on neither
+ * Read-only port for issue-tracker data. LinearIssueTracker (direct GraphQL)
+ * and McpLinearIssueTracker (via the custom Linear MCP server, see
+ * mcp/linear) both implement this; agent/tool code depends on neither
  * directly (AGENTS.md #11).
  */
 export interface IssueTracker {
@@ -49,149 +60,197 @@ export interface IssueTracker {
   getIssue(idOrIdentifier: string): Promise<ProjectIssue>;
 }
 
-// --- Minimal shapes resolveProjectIssue actually reads off a Linear issue.
-// Real @linear/sdk `Issue`/`IssueRelation` instances satisfy these
-// structurally (their public getters match), but typing against these
-// narrow interfaces — rather than the concrete SDK classes, which carry
-// private fields and so can't be satisfied by a hand-built object — is what
-// makes resolveProjectIssue unit-testable without constructing real SDK
-// model instances. See issue-tracker.test.ts.
+// --- Raw GraphQL shapes, validated at the boundary. Relation targets are
+// nullable here even though Linear's schema says otherwise: a relation to an
+// issue the key can't see is dropped rather than failing the whole call.
 
-interface IssueRefLike {
-  id: string;
-  identifier: string;
-  title: string;
-}
+const rawRefSchema = relatedIssueRefSchema.nullable().optional();
+const rawRelationsSchema = z.object({
+  nodes: z.array(
+    z.object({
+      type: z.string(),
+      issue: rawRefSchema,
+      relatedIssue: rawRefSchema,
+    }),
+  ),
+  pageInfo: z.object({ hasNextPage: z.boolean() }),
+});
 
-interface RelationLike {
-  type: string;
-  issue: Promise<IssueRefLike | undefined> | undefined;
-  relatedIssue: Promise<IssueRefLike | undefined> | undefined;
-}
+export const rawIssueSchema = z.object({
+  id: z.string(),
+  identifier: z.string(),
+  title: z.string(),
+  url: z.string(),
+  priorityLabel: z.string(),
+  dueDate: z.string().nullable().optional(),
+  updatedAt: z.string(),
+  state: z.object({ name: z.string(), type: z.string() }).nullable().optional(),
+  relations: rawRelationsSchema,
+  inverseRelations: rawRelationsSchema,
+});
+export type RawIssue = z.infer<typeof rawIssueSchema>;
 
-interface WorkflowStateLike {
-  name: string;
-  type: string;
-}
+const rawProjectPageSchema = z.object({
+  project: z.object({
+    id: z.string(),
+    name: z.string(),
+    url: z.string(),
+    targetDate: z.string().nullable().optional(),
+    health: z.string().nullable().optional(),
+    issues: z.object({
+      nodes: z.array(rawIssueSchema),
+      pageInfo: z.object({
+        hasNextPage: z.boolean(),
+        endCursor: z.string().nullable().optional(),
+      }),
+    }),
+  }),
+});
 
-export interface IssueLike {
-  id: string;
-  identifier: string;
-  title: string;
-  url: string;
-  priorityLabel: string;
-  dueDate?: string | null;
-  updatedAt: Date;
-  state: Promise<WorkflowStateLike | undefined> | undefined;
-  relations(): Promise<{ nodes: RelationLike[] }>;
-  inverseRelations(): Promise<{ nodes: RelationLike[] }>;
-}
-
-/** Resolves a set of relation records to the referenced issue's identity fields. */
-async function resolveRelated(
-  relations: RelationLike[],
-  pick: (
-    relation: RelationLike,
-  ) => Promise<IssueRefLike | undefined> | undefined,
-): Promise<RelatedIssueRef[]> {
-  const resolved = await Promise.all(
-    relations.map((relation) => pick(relation) ?? Promise.resolve(undefined)),
-  );
-  return resolved
-    .filter((issue): issue is IssueRefLike => Boolean(issue))
-    .map((issue) => ({
-      id: issue.id,
-      identifier: issue.identifier,
-      title: issue.title,
-    }));
-}
-
-/**
- * Builds a ProjectIssue from a Linear issue, resolving its explicit
- * blocks/blockedBy relations. Exported as a free function — not a class
- * method — so both `listProjectIssues` and `getIssue` share one
- * implementation without duplicating relation-loading logic, and so it's
- * unit-testable in isolation (see issue-tracker.test.ts).
- */
-export async function resolveProjectIssue(
-  issue: IssueLike,
-): Promise<ProjectIssue> {
-  const [state, relations, inverseRelations] = await Promise.all([
-    issue.state,
-    issue.relations(),
-    issue.inverseRelations(),
-  ]);
-
-  // relations(): this issue is the relation's source. type "blocks" means
-  // this issue blocks relation.relatedIssue.
-  const blocks = await resolveRelated(
-    relations.nodes.filter((relation) => relation.type === "blocks"),
-    (relation) => relation.relatedIssue,
-  );
-
-  // inverseRelations(): this issue is the relation's target. type "blocks"
-  // means relation.issue (the source) blocks this issue.
-  const blockedBy = await resolveRelated(
-    inverseRelations.nodes.filter((relation) => relation.type === "blocks"),
-    (relation) => relation.issue,
-  );
-
-  const dueDate = issue.dueDate ?? null;
-  const stateType = state?.type ?? "unknown";
-
-  return {
-    id: issue.id,
-    identifier: issue.identifier,
-    title: issue.title,
-    url: issue.url,
-    state: state?.name ?? "unknown",
-    stateType,
-    priorityLabel: issue.priorityLabel,
-    dueDate,
-    overdue: isOverdue(dueDate, stateType),
-    updatedAt: issue.updatedAt.toISOString(),
-    blockedBy,
-    blocks,
-  };
-}
+const rawIssueResponseSchema = z.object({ issue: rawIssueSchema });
 
 const PAGE_SIZE = 50;
 // Safety cap on pagination. Synthetic demo projects are small (tens of
 // issues); this exists to bound worst-case latency/cost, not to handle real
-// production volume.
+// production volume. Hitting it sets `truncated`.
 const MAX_PAGES = 10;
+// Per-issue cap on each relation direction, kept small so a page stays well
+// inside Linear's query complexity limit. Hitting it also sets `truncated`.
+const RELATIONS_PER_ISSUE = 25;
+
+const ISSUE_FIELDS = `
+  id identifier title url priorityLabel dueDate updatedAt
+  state { name type }
+  relations(first: ${RELATIONS_PER_ISSUE}) {
+    nodes { type relatedIssue { id identifier title } }
+    pageInfo { hasNextPage }
+  }
+  inverseRelations(first: ${RELATIONS_PER_ISSUE}) {
+    nodes { type issue { id identifier title } }
+    pageInfo { hasNextPage }
+  }`;
+
+/**
+ * One request per page of issues, relations included. The SDK's lazy models
+ * cost one request for the state and two more for relations per issue, plus
+ * one per related issue: 60+ requests for a twenty-issue project.
+ */
+const PROJECT_ISSUES_QUERY = `
+  query ProjectIssues($projectId: String!, $first: Int!, $after: String) {
+    project(id: $projectId) {
+      id name url targetDate health
+      issues(first: $first, after: $after) {
+        nodes { ${ISSUE_FIELDS} }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }`;
+
+const ISSUE_QUERY = `
+  query Issue($id: String!) {
+    issue(id: $id) { ${ISSUE_FIELDS} }
+  }`;
+
+function blockRefs(
+  nodes: RawIssue["relations"]["nodes"],
+  pick: "issue" | "relatedIssue",
+): RelatedIssueRef[] {
+  return nodes
+    .filter((relation) => relation.type === "blocks")
+    .map((relation) => relation[pick])
+    .filter((ref): ref is RelatedIssueRef => Boolean(ref))
+    .map(({ id, identifier, title }) => ({ id, identifier, title }));
+}
+
+/** Maps one validated raw issue to the domain shape. Pure, so it's unit-tested directly. */
+export function toProjectIssue(
+  raw: RawIssue,
+  now: Date = new Date(),
+): ProjectIssue {
+  const dueDate = raw.dueDate ?? null;
+  const stateType = raw.state?.type ?? "unknown";
+  return {
+    id: raw.id,
+    identifier: raw.identifier,
+    title: raw.title,
+    url: raw.url,
+    state: raw.state?.name ?? "unknown",
+    stateType,
+    priorityLabel: raw.priorityLabel,
+    dueDate,
+    overdue: isOverdue(dueDate, stateType, now),
+    updatedAt: raw.updatedAt,
+    // relations(): this issue is the source; "blocks" means it blocks relatedIssue.
+    blocks: blockRefs(raw.relations.nodes, "relatedIssue"),
+    // inverseRelations(): this issue is the target; "blocks" means issue blocks it.
+    blockedBy: blockRefs(raw.inverseRelations.nodes, "issue"),
+  };
+}
+
+function relationsTruncated(raw: RawIssue): boolean {
+  return (
+    raw.relations.pageInfo.hasNextPage ||
+    raw.inverseRelations.pageInfo.hasNextPage
+  );
+}
+
+/** Sends one GraphQL document and resolves to its `data`. */
+export type LinearGraphQLRequest = (
+  query: string,
+  variables: Record<string, unknown>,
+) => Promise<unknown>;
 
 export class LinearIssueTracker implements IssueTracker {
-  private readonly client: LinearClient;
+  private readonly request: LinearGraphQLRequest;
 
-  constructor(apiKey: string) {
-    this.client = new LinearClient({ apiKey });
+  /** An API key, or a request function (tests). */
+  constructor(auth: string | LinearGraphQLRequest) {
+    if (typeof auth === "string") {
+      const client = new LinearClient({ apiKey: auth });
+      this.request = (query, variables) =>
+        client.client.request(query, variables);
+    } else {
+      this.request = auth;
+    }
   }
 
   async listProjectIssues(projectId: string): Promise<ProjectIssuesResult> {
     try {
-      const project = await this.client.project(projectId);
+      const rawIssues: RawIssue[] = [];
+      let after: string | undefined;
+      let hasNextPage = true;
+      let pagesFetched = 0;
+      let project: z.infer<typeof rawProjectPageSchema>["project"] | undefined;
 
-      let connection = await project.issues({ first: PAGE_SIZE });
-      let pagesFetched = 1;
-      while (connection.pageInfo.hasNextPage && pagesFetched < MAX_PAGES) {
-        connection = await connection.fetchNext();
+      while (hasNextPage && pagesFetched < MAX_PAGES) {
+        const page = rawProjectPageSchema.parse(
+          await this.request(PROJECT_ISSUES_QUERY, {
+            projectId,
+            first: PAGE_SIZE,
+            after,
+          }),
+        );
+        project = page.project;
+        rawIssues.push(...page.project.issues.nodes);
+        hasNextPage = page.project.issues.pageInfo.hasNextPage;
+        after = page.project.issues.pageInfo.endCursor ?? undefined;
         pagesFetched += 1;
+        // A next page with no cursor can't be fetched; report it as truncated.
+        if (hasNextPage && !after) break;
       }
 
-      const issues = await Promise.all(
-        connection.nodes.map((issue: Issue) => resolveProjectIssue(issue)),
-      );
-
+      // The loop runs at least once, so project is set.
+      const summary = project!;
       return {
         project: {
-          id: project.id,
-          name: project.name,
-          url: project.url,
-          targetDate: project.targetDate ?? null,
-          health: project.health ?? null,
+          id: summary.id,
+          name: summary.name,
+          url: summary.url,
+          targetDate: summary.targetDate ?? null,
+          health: summary.health ?? null,
         },
-        issues,
+        issues: rawIssues.map((raw) => toProjectIssue(raw)),
+        truncated: hasNextPage || rawIssues.some(relationsTruncated),
       };
     } catch (err) {
       throw new Error(
@@ -203,8 +262,10 @@ export class LinearIssueTracker implements IssueTracker {
 
   async getIssue(idOrIdentifier: string): Promise<ProjectIssue> {
     try {
-      const issue = await this.client.issue(idOrIdentifier);
-      return await resolveProjectIssue(issue);
+      const { issue } = rawIssueResponseSchema.parse(
+        await this.request(ISSUE_QUERY, { id: idOrIdentifier }),
+      );
+      return toProjectIssue(issue);
     } catch (err) {
       throw new Error(
         `Linear: failed to load issue "${idOrIdentifier}": ${(err as Error).message}`,

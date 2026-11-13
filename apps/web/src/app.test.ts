@@ -213,6 +213,40 @@ describe("HTTP validation", () => {
 });
 
 describe("investigation transport", () => {
+  it("streams the answer text, coalesced, in order with resets", async () => {
+    const rt = runtime();
+    const run = vi
+      .fn<typeof investigate>()
+      .mockImplementation(async (_q, _deps, options) => {
+        options!.onAnswerText!({ type: "reset" });
+        options!.onAnswerText!({ type: "delta", text: "Checking " });
+        options!.onAnswerText!({ type: "delta", text: "Slack." });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        options!.onAnswerText!({ type: "reset" });
+        options!.onAnswerText!({ type: "delta", text: "Launch is blocked" });
+        return result();
+      });
+    const app = createWebApp({
+      createRuntime: async () => rt.value,
+      investigate: run,
+      pollMs: 1,
+    });
+
+    const response = await app.request(
+      post("/api/investigate", { question: "Investigate" }),
+    );
+    const events = parseEvents(await response.text()).filter((e) =>
+      e.event?.startsWith("answer."),
+    );
+
+    expect(events).toEqual([
+      { event: "answer.reset", data: {} },
+      { event: "answer.delta", data: { text: "Checking Slack." } },
+      { event: "answer.reset", data: {} },
+      { event: "answer.delta", data: { text: "Launch is blocked" } },
+    ]);
+  });
+
   it("streams live curated activity before investigation resolves", async () => {
     const gate = deferred<InvestigationResult>();
     const rt = runtime();

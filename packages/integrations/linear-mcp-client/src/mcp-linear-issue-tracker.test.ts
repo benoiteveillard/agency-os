@@ -58,6 +58,25 @@ describe("McpLinearIssueTracker (isolated, fake transport)", () => {
     await expect(tracker.getIssue("JUS-24")).rejects.toThrow(/not found/);
   });
 
+  it("rejects a result whose shape doesn't match the schema, rather than passing it on", async () => {
+    const fakeClient: McpToolCaller = {
+      callTool: async () => ({
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({ ...fakeIssue, blocks: "JUS-19" }),
+          },
+        ],
+      }),
+    };
+
+    const tracker = new McpLinearIssueTracker(fakeClient);
+
+    await expect(tracker.getIssue("JUS-24")).rejects.toThrow(
+      /^Linear MCP tool "linear_get_issue" returned an unexpected shape at "blocks"/,
+    );
+  });
+
   it("throws rather than returning undefined when the result has no text content", async () => {
     const fakeClient: McpToolCaller = {
       callTool: async () => ({ content: [] }),
@@ -83,6 +102,7 @@ describe("McpLinearIssueTracker (real protocol round-trip via InMemoryTransport)
           health: "atRisk",
         },
         issues: [fakeIssue],
+        truncated: true,
       }),
       getIssue: async () => fakeIssue,
     };
@@ -103,6 +123,7 @@ describe("McpLinearIssueTracker (real protocol round-trip via InMemoryTransport)
 
     expect(result.project.id).toBe("proj_1");
     expect(result.issues).toEqual([fakeIssue]);
+    expect(result.truncated).toBe(true);
 
     await client.close();
   });

@@ -5,6 +5,7 @@ import type { PullRequestSource } from "@agency-os/integration-github";
 import type {
   SlackMessageSource,
   SlackMessage,
+  SlackMessagePage,
 } from "@agency-os/integration-slack";
 import type { AttributeValue } from "@agency-os/observability";
 import {
@@ -582,6 +583,27 @@ function slackMessagesToToolData(messages: SlackMessage[]) {
   }));
 }
 
+function slackPageResult(
+  page: SlackMessagePage,
+  project: ProjectRegistryEntry,
+): ToolExecutionResult {
+  return {
+    data: {
+      messages: slackMessagesToToolData(page.messages),
+      truncated: page.truncated,
+    },
+    evidence: slackMessagesToEvidence(page.messages, project),
+    ...truncationAttributes(page.truncated),
+  };
+}
+
+/** A capped read is worth seeing in a trace: it's when an answer may rest on partial data. */
+function truncationAttributes(
+  truncated: boolean | undefined,
+): Pick<ToolExecutionResult, "traceAttributes"> {
+  return truncated ? { traceAttributes: { truncated: true } } : {};
+}
+
 export async function executeTool(
   name: string,
   input: Record<string, unknown>,
@@ -613,17 +635,22 @@ export async function executeTool(
         timestamp: issue.updatedAt,
       }));
 
-      return { data: result, evidence };
+      return {
+        data: result,
+        evidence,
+        ...truncationAttributes(result.truncated),
+      };
     }
 
     case "github_list_pull_requests": {
       const project = resolveProject(deps, requireString(input, "projectSlug"));
-      const pulls = await deps.pullRequestSource.listPullRequests(
-        project.githubOwner,
-        project.githubRepo,
-      );
+      const { pullRequests, truncated } =
+        await deps.pullRequestSource.listPullRequests(
+          project.githubOwner,
+          project.githubRepo,
+        );
 
-      const evidence: Evidence[] = pulls.map((pr) => ({
+      const evidence: Evidence[] = pullRequests.map((pr) => ({
         source: "github",
         id: `#${pr.number}`,
         url: pr.url,
@@ -634,7 +661,11 @@ export async function executeTool(
         timestamp: pr.updatedAt,
       }));
 
-      return { data: pulls, evidence };
+      return {
+        data: { pullRequests, truncated },
+        evidence,
+        ...truncationAttributes(truncated),
+      };
     }
 
     case "github_get_workflow_run_status": {
@@ -669,33 +700,29 @@ export async function executeTool(
         },
       ];
 
-      return { data: status, evidence };
+      return {
+        data: status,
+        evidence,
+        ...truncationAttributes(status.truncated),
+      };
     }
 
     case "slack_get_channel_messages": {
       const project = resolveProject(deps, requireString(input, "projectSlug"));
-      const messages = await deps.slackMessageSource.getChannelMessages(
+      const page = await deps.slackMessageSource.getChannelMessages(
         project.slackChannelId,
       );
-
-      return {
-        data: slackMessagesToToolData(messages),
-        evidence: slackMessagesToEvidence(messages, project),
-      };
+      return slackPageResult(page, project);
     }
 
     case "slack_get_thread": {
       const project = resolveProject(deps, requireString(input, "projectSlug"));
       const threadTs = requireString(input, "threadTs");
-      const messages = await deps.slackMessageSource.getThread(
+      const page = await deps.slackMessageSource.getThread(
         project.slackChannelId,
         threadTs,
       );
-
-      return {
-        data: slackMessagesToToolData(messages),
-        evidence: slackMessagesToEvidence(messages, project),
-      };
+      return slackPageResult(page, project);
     }
 
     case "propose_linear_issue": {
