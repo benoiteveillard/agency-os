@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Tracer, type SpanRecord } from "@agency-os/observability";
 import type { AgentDependencies } from "./tools.js";
-import { investigate } from "./runner.js";
+import { investigate, type AnswerTextUpdate } from "./runner.js";
 
 /**
  * Drives the real tool loop and the real Anthropic SDK against a stubbed
@@ -26,29 +26,99 @@ const endTurn = (value = "Final answer."): ScriptedTurn => ({
 
 const requests: Array<Record<string, unknown>> = [];
 
+/** The SSE events the Messages API streams for one complete message. */
+function sseEvents(message: Record<string, unknown> & ScriptedTurn): unknown[] {
+  const { content, stop_reason, usage, ...rest } = message;
+  const events: unknown[] = [
+    {
+      type: "message_start",
+      message: { ...rest, content: [], stop_reason: null, usage },
+    },
+  ];
+  content.forEach((raw, index) => {
+    const block = raw as Record<string, unknown>;
+    if (block.type === "text") {
+      events.push(
+        {
+          type: "content_block_start",
+          index,
+          content_block: { type: "text", text: "" },
+        },
+        {
+          type: "content_block_delta",
+          index,
+          delta: { type: "text_delta", text: block.text },
+        },
+      );
+    } else if (block.type === "tool_use") {
+      events.push(
+        {
+          type: "content_block_start",
+          index,
+          content_block: { ...block, input: {} },
+        },
+        {
+          type: "content_block_delta",
+          index,
+          delta: {
+            type: "input_json_delta",
+            partial_json: JSON.stringify(block.input),
+          },
+        },
+      );
+    } else {
+      events.push({ type: "content_block_start", index, content_block: block });
+    }
+    events.push({ type: "content_block_stop", index });
+  });
+  events.push(
+    {
+      type: "message_delta",
+      delta: { stop_reason, stop_sequence: null },
+      usage,
+    },
+    { type: "message_stop" },
+  );
+  return events;
+}
+
 function scriptModel(turns: ScriptedTurn[]): void {
   let index = 0;
   vi.stubGlobal("fetch", async (_url: unknown, init: RequestInit) => {
-    requests.push(JSON.parse(init.body as string));
+    const body = JSON.parse(init.body as string);
+    requests.push(body);
     const turn = turns[index++];
     if (!turn) throw new Error("The model was called more often than scripted");
-    return new Response(
-      JSON.stringify({
-        id: "msg",
-        type: "message",
-        role: "assistant",
-        model: "claude-test",
-        stop_sequence: null,
-        usage: {
-          input_tokens: 1,
-          output_tokens: 1,
-          cache_creation_input_tokens: 0,
-          cache_read_input_tokens: 0,
-        },
-        ...turn,
-      }),
-      { status: 200, headers: { "content-type": "application/json" } },
-    );
+    const message = {
+      id: "msg",
+      type: "message",
+      role: "assistant",
+      model: "claude-test",
+      stop_sequence: null,
+      usage: {
+        input_tokens: 1,
+        output_tokens: 1,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+      },
+      ...turn,
+    };
+    if (!body.stream) {
+      return new Response(JSON.stringify(message), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    const sse = sseEvents(message)
+      .map((event) => {
+        const type = (event as { type: string }).type;
+        return `event: ${type}\ndata: ${JSON.stringify(event)}\n\n`;
+      })
+      .join("");
+    return new Response(sse, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
   });
 }
 
@@ -73,6 +143,7 @@ function deps(): AgentDependencies {
           targetDate: null,
           health: null,
         },
+        truncated: false,
         issues: [],
       }),
       getIssue: async () => {
@@ -80,19 +151,22 @@ function deps(): AgentDependencies {
       },
     },
     pullRequestSource: {
-      listPullRequests: async () => [],
+      listPullRequests: async () => ({ pullRequests: [], truncated: false }),
       getWorkflowRunStatus: async () => ({ status: "unknown", runs: [] }),
     },
     slackMessageSource: {
-      getChannelMessages: async () => [
-        {
-          ts: "1726142400.000100",
-          authorId: "U1",
-          text: "Client approval is still missing.",
-          isThreadRoot: false,
-        },
-      ],
-      getThread: async () => [],
+      getChannelMessages: async () => ({
+        truncated: false,
+        messages: [
+          {
+            ts: "1726142400.000100",
+            authorId: "U1",
+            text: "Client approval is still missing.",
+            isThreadRoot: false,
+          },
+        ],
+      }),
+      getThread: async () => ({ messages: [], truncated: false }),
     },
   } as AgentDependencies;
 }
@@ -400,8 +474,69 @@ describe("investigate temporal context", () => {
     const toolTurn = (requests[1]!.messages as Array<{ content: unknown }>).at(
       -1,
     )!.content as Array<{ content: string }>;
-    expect(JSON.parse(toolTurn[0]!.content)).toMatchObject([
-      { ts: "1726142400.000100", sentAt: "2024-09-12T12:00:00.000Z" },
+    expect(JSON.parse(toolTurn[0]!.content)).toMatchObject({
+      messages: [
+        { ts: "1726142400.000100", sentAt: "2024-09-12T12:00:00.000Z" },
+      ],
+      truncated: false,
+    });
+  });
+});
+
+describe("investigate answer streaming", () => {
+  async function streamed(turns: ScriptedTurn[]) {
+    scriptModel(turns);
+    const updates: AnswerTextUpdate[] = [];
+    const tracer = new Tracer();
+    const result = await investigate("Are we on track?", deps(), {
+      anthropicApiKey: "test-key",
+      tracer,
+      parentSpan: tracer.startSpan("agent.run", "run"),
+      onAnswerText: (update) => updates.push(update),
+    });
+    return { result, updates };
+  }
+
+  /** What a reader would see after applying every update in order. */
+  const visible = (updates: AnswerTextUpdate[]) =>
+    updates.reduce(
+      (text, update) => (update.type === "reset" ? "" : text + update.text),
+      "",
+    );
+
+  it("streams the answer, starting each model turn from empty", async () => {
+    const { result, updates } = await streamed([
+      {
+        stop_reason: "tool_use",
+        content: [
+          text("Checking Slack first."),
+          toolUse("t1", "slack_get_channel_messages", { projectSlug: "acme" }),
+        ],
+      },
+      endTurn("Approval is still missing."),
     ]);
+
+    expect(updates.filter((update) => update.type === "reset")).toHaveLength(2);
+    expect(visible(updates)).toBe("Approval is still missing.");
+    expect(result.answer).toBe("Approval is still missing.");
+  });
+
+  it("drops the declined model's partial text when a fallback takes over", async () => {
+    const { updates } = await streamed([
+      {
+        stop_reason: "end_turn",
+        content: [
+          text("Partial text from the first model"),
+          {
+            type: "fallback",
+            from: { model: "claude-sonnet-5-5" },
+            to: { model: "claude-sonnet-5" },
+          },
+          text("The answer from the fallback model."),
+        ],
+      },
+    ]);
+
+    expect(visible(updates)).toBe("The answer from the fallback model.");
   });
 });

@@ -100,5 +100,6 @@ Do not restate your full reasoning as prose in the same turn you call submit_ass
 - Distinguish fact (directly supported by an authoritative source), inference (a reasonable conclusion you're drawing across sources), and uncertainty (evidence is missing, incomplete, or conflicting) — don't blur these together.
 - Fetch a Slack thread (slack_get_thread) only when a channel message looks relevant enough to warrant it — don't fetch every thread by default.
 - If a tool call fails or returns incomplete information, say so plainly rather than guessing.
+- A tool result with truncated: true is a partial list: more items exist than were returned. Say so in your answer, and never treat something's absence from a truncated list as evidence that it doesn't exist.
 - Keep the final answer concise and structured: lead with a direct answer, then list the supporting evidence.`;
 }

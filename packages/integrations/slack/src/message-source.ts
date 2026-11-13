@@ -19,14 +19,20 @@ export interface SlackMessage {
   isThreadRoot: boolean;
 }
 
+export interface SlackMessagePage {
+  messages: SlackMessage[];
+  /** True when the page cap was hit and older messages exist that aren't included. */
+  truncated: boolean;
+}
+
 /**
  * Read-only port for Slack conversation data. SlackConversationSource is
  * the only implementation today; the interface exists so agent/tool code
  * doesn't depend on @slack/web-api's response shapes directly (AGENTS.md #11).
  */
 export interface SlackMessageSource {
-  getChannelMessages(channelId: string): Promise<SlackMessage[]>;
-  getThread(channelId: string, threadTs: string): Promise<SlackMessage[]>;
+  getChannelMessages(channelId: string): Promise<SlackMessagePage>;
+  getThread(channelId: string, threadTs: string): Promise<SlackMessagePage>;
 }
 
 // --- Minimal shape toSlackMessage actually reads off a raw Slack message.
@@ -109,7 +115,8 @@ const PAGE_SIZE = 100;
 // to as little as 1 request/minute on conversations.history/replies (see
 // docs/decisions.md). The synthetic demo channel is small enough that one
 // page covers it; this cap bounds worst-case cost if that assumption is
-// ever wrong, rather than looping until has_more is false.
+// ever wrong, rather than looping until has_more is false. Hitting it sets
+// `truncated`, so the model knows the history it sees is partial.
 const MAX_PAGES = 3;
 
 export class SlackConversationSource implements SlackMessageSource {
@@ -119,7 +126,7 @@ export class SlackConversationSource implements SlackMessageSource {
     this.client = new WebClient(botToken);
   }
 
-  async getChannelMessages(channelId: string): Promise<SlackMessage[]> {
+  async getChannelMessages(channelId: string): Promise<SlackMessagePage> {
     try {
       return await this.paginate((cursor) =>
         this.client.conversations.history({
@@ -139,7 +146,7 @@ export class SlackConversationSource implements SlackMessageSource {
   async getThread(
     channelId: string,
     threadTs: string,
-  ): Promise<SlackMessage[]> {
+  ): Promise<SlackMessagePage> {
     try {
       return await this.paginate((cursor) =>
         this.client.conversations.replies({
@@ -162,7 +169,7 @@ export class SlackConversationSource implements SlackMessageSource {
       messages?: SlackApiMessage[];
       response_metadata?: { next_cursor?: string };
     }>,
-  ): Promise<SlackMessage[]> {
+  ): Promise<SlackMessagePage> {
     const results: SlackMessage[] = [];
     let cursor: string | undefined;
     let pagesFetched = 0;
@@ -177,6 +184,6 @@ export class SlackConversationSource implements SlackMessageSource {
       pagesFetched += 1;
     } while (cursor && pagesFetched < MAX_PAGES);
 
-    return results;
+    return { messages: results, truncated: cursor !== undefined };
   }
 }

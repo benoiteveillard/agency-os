@@ -1,4 +1,5 @@
 import type {
+  PullRequestList,
   PullRequestSource,
   PullRequestSummary,
   WorkflowRunStatusSummary,
@@ -20,10 +21,10 @@ export class FixturePullRequestSource implements PullRequestSource {
   async listPullRequests(
     _owner: string,
     _repo: string,
-  ): Promise<PullRequestSummary[]> {
+  ): Promise<PullRequestList> {
     const outcome = this.config.listPullRequests;
     if (!outcome.ok) throw new Error(outcome.error);
-    return outcome.value;
+    return { pullRequests: outcome.value, truncated: false };
   }
 
   async getWorkflowRunStatus(

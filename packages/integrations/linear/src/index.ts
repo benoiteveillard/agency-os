@@ -1,10 +1,16 @@
 export type {
   IssueTracker,
+  LinearGraphQLRequest,
   ProjectIssue,
   ProjectIssuesResult,
   ProjectSummary,
+  RawIssue,
   RelatedIssueRef,
-  IssueLike,
 } from "./issue-tracker.js";
-export { LinearIssueTracker, resolveProjectIssue } from "./issue-tracker.js";
+export {
+  LinearIssueTracker,
+  projectIssueSchema,
+  projectIssuesResultSchema,
+  toProjectIssue,
+} from "./issue-tracker.js";
 export { isOverdue } from "./overdue.js";

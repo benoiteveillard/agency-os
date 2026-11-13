@@ -1,8 +1,11 @@
-import type {
-  IssueTracker,
-  ProjectIssue,
-  ProjectIssuesResult,
+import {
+  projectIssueSchema,
+  projectIssuesResultSchema,
+  type IssueTracker,
+  type ProjectIssue,
+  type ProjectIssuesResult,
 } from "@agency-os/integration-linear";
+import type { z } from "zod";
 
 /**
  * The MCP client method this adapter actually needs, typed narrowly rather
@@ -48,21 +51,30 @@ export class McpLinearIssueTracker implements IssueTracker {
   constructor(private readonly client: McpToolCaller) {}
 
   async listProjectIssues(projectId: string): Promise<ProjectIssuesResult> {
-    return this.callJsonTool<ProjectIssuesResult>(
+    return this.callJsonTool(
       "linear_list_project_issues",
       { projectId },
+      projectIssuesResultSchema,
     );
   }
 
   async getIssue(idOrIdentifier: string): Promise<ProjectIssue> {
-    return this.callJsonTool<ProjectIssue>("linear_get_issue", {
-      issueId: idOrIdentifier,
-    });
+    return this.callJsonTool(
+      "linear_get_issue",
+      { issueId: idOrIdentifier },
+      projectIssueSchema,
+    );
   }
 
+  /**
+   * The server is our own code, but it's a separate process speaking JSON:
+   * its output is checked against the same schema the server side produces,
+   * so a version skew fails here, loudly, instead of reaching the model.
+   */
   private async callJsonTool<T>(
     name: string,
     args: Record<string, unknown>,
+    schema: z.ZodType<T>,
   ): Promise<T> {
     const raw = await this.client.callTool({ name, arguments: args });
     if (!isRawToolResult(raw)) {
@@ -82,6 +94,19 @@ export class McpLinearIssueTracker implements IssueTracker {
     if (!text) {
       throw new Error(`Linear MCP tool "${name}" returned no content`);
     }
-    return JSON.parse(text) as T;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      throw new Error(`Linear MCP tool "${name}" returned invalid JSON`);
+    }
+    const result = schema.safeParse(parsed);
+    if (!result.success) {
+      const issue = result.error.issues[0];
+      throw new Error(
+        `Linear MCP tool "${name}" returned an unexpected shape at "${issue?.path.join(".") ?? ""}": ${issue?.message ?? "invalid"}`,
+      );
+    }
+    return result.data;
   }
 }

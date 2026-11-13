@@ -1,9 +1,10 @@
 export type {
+  PullRequestList,
   PullRequestSource,
   PullRequestSummary,
   PullRequestReview,
 } from "./pull-request-source.js";
-export { GitHubPullRequestSource } from "./pull-request-source.js";
+export { GitHubPullRequestSource, hasNextPage } from "./pull-request-source.js";
 export type {
   WorkflowRunStatusSummary,
   WorkflowRunDetail,

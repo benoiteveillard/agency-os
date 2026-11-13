@@ -5,7 +5,7 @@ import type {
 } from "@agency-os/integration-linear";
 import type {
   PullRequestSource,
-  PullRequestSummary,
+  PullRequestList,
 } from "@agency-os/integration-github";
 import type { WorkflowRunStatusSummary } from "@agency-os/integration-github";
 import type {
@@ -48,6 +48,7 @@ const fakeProjectIssues: ProjectIssuesResult = {
       ],
     },
   ],
+  truncated: false,
 };
 
 const fakeSlackMessages: SlackMessage[] = [
@@ -77,19 +78,22 @@ function makeDeps(
     getIssue: async () => fakeProjectIssues.issues[0]!,
   };
   const pullRequestSource: PullRequestSource = {
-    listPullRequests: async (): Promise<PullRequestSummary[]> => [
-      {
-        number: 142,
-        title: "Checkout redesign",
-        url: "https://github.com/os-agency-fake/acme-website-migration/pull/142",
-        draft: false,
-        headSha: "abc1234def",
-        baseBranch: "main",
-        updatedAt: "2026-09-11T00:00:00.000Z",
-        requestedReviewers: ["sarah"],
-        reviews: [],
-      },
-    ],
+    listPullRequests: async (): Promise<PullRequestList> => ({
+      truncated: false,
+      pullRequests: [
+        {
+          number: 142,
+          title: "Checkout redesign",
+          url: "https://github.com/os-agency-fake/acme-website-migration/pull/142",
+          draft: false,
+          headSha: "abc1234def",
+          baseBranch: "main",
+          updatedAt: "2026-09-11T00:00:00.000Z",
+          requestedReviewers: ["sarah"],
+          reviews: [],
+        },
+      ],
+    }),
     getWorkflowRunStatus: async (): Promise<WorkflowRunStatusSummary> => ({
       status: "failing",
       runs: [
@@ -104,8 +108,11 @@ function makeDeps(
   };
 
   const slackMessageSource: SlackMessageSource = {
-    getChannelMessages: async () => fakeSlackMessages,
-    getThread: async () => fakeSlackMessages,
+    getChannelMessages: async () => ({
+      messages: fakeSlackMessages,
+      truncated: false,
+    }),
+    getThread: async () => ({ messages: fakeSlackMessages, truncated: false }),
   };
 
   return {
@@ -148,6 +155,34 @@ describe("executeTool", () => {
     expect(result.evidence[0]?.summary).toContain("blocks ACM-20");
   });
 
+  it("tells the model, and the trace, when a list is truncated", async () => {
+    const deps = makeDeps({
+      slackMessageSource: {
+        getChannelMessages: async () => ({
+          messages: fakeSlackMessages,
+          truncated: true,
+        }),
+        getThread: async () => ({ messages: [], truncated: false }),
+      },
+    });
+
+    const truncated = await executeTool(
+      "slack_get_channel_messages",
+      { projectSlug: "acme-website-migration" },
+      deps,
+    );
+    const complete = await executeTool(
+      "linear_list_project_issues",
+      { projectSlug: "acme-website-migration" },
+      deps,
+    );
+
+    expect(truncated.data).toMatchObject({ truncated: true });
+    expect(truncated.traceAttributes).toEqual({ truncated: true });
+    expect(complete.data).toMatchObject({ truncated: false });
+    expect(complete.traceAttributes).toBeUndefined();
+  });
+
   it("returns PR evidence for github_list_pull_requests", async () => {
     const result = await executeTool(
       "github_list_pull_requests",
@@ -173,7 +208,7 @@ describe("executeTool", () => {
   it("reports unknown, not a guess, when no workflow run exists for the SHA", async () => {
     const deps = makeDeps({
       pullRequestSource: {
-        listPullRequests: async () => [],
+        listPullRequests: async () => ({ pullRequests: [], truncated: false }),
         getWorkflowRunStatus: async (): Promise<WorkflowRunStatusSummary> => ({
           status: "unknown",
           runs: [],

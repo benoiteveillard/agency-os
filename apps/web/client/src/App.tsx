@@ -56,6 +56,7 @@ export function App() {
             <InvestigationProgress
               activities={state.activities}
               preliminary={state.preliminary}
+              draft={state.draft}
               onCancel={reset}
             />
           </div>

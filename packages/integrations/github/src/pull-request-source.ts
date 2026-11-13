@@ -21,12 +21,23 @@ export interface PullRequestSummary {
   reviews: PullRequestReview[];
 }
 
+export interface PullRequestList {
+  pullRequests: PullRequestSummary[];
+  /** True when more open pull requests exist than were fetched. */
+  truncated: boolean;
+}
+
+/** GitHub signals a further page with a rel="next" Link header. */
+export function hasNextPage(link: string | undefined): boolean {
+  return /rel="next"/.test(link ?? "");
+}
+
 /**
  * Read-only port for pull-request data. GitHubPullRequestSource is the only
  * implementation today (AGENTS.md #11).
  */
 export interface PullRequestSource {
-  listPullRequests(owner: string, repo: string): Promise<PullRequestSummary[]>;
+  listPullRequests(owner: string, repo: string): Promise<PullRequestList>;
   getWorkflowRunStatus(
     owner: string,
     repo: string,
@@ -44,16 +55,16 @@ export class GitHubPullRequestSource implements PullRequestSource {
   async listPullRequests(
     owner: string,
     repo: string,
-  ): Promise<PullRequestSummary[]> {
+  ): Promise<PullRequestList> {
     try {
-      const { data: pulls } = await this.octokit.rest.pulls.list({
+      const { data: pulls, headers } = await this.octokit.rest.pulls.list({
         owner,
         repo,
         state: "open",
         per_page: 100,
       });
 
-      return await Promise.all(
+      const pullRequests = await Promise.all(
         pulls.map(async (pr) => {
           const { data: reviews } = await this.octokit.rest.pulls.listReviews({
             owner,
@@ -80,6 +91,7 @@ export class GitHubPullRequestSource implements PullRequestSource {
           };
         }),
       );
+      return { pullRequests, truncated: hasNextPage(headers.link) };
     } catch (err) {
       throw new Error(
         `GitHub: failed to list pull requests for ${owner}/${repo}: ${(err as Error).message}`,
@@ -106,7 +118,7 @@ export class GitHubPullRequestSource implements PullRequestSource {
         per_page: 20,
       });
 
-      return summarizeWorkflowRuns(
+      const summary = summarizeWorkflowRuns(
         data.workflow_runs.map((run) => ({
           workflowName: run.name ?? "unknown workflow",
           status: run.status ?? "unknown",
@@ -115,6 +127,9 @@ export class GitHubPullRequestSource implements PullRequestSource {
           updatedAt: run.updated_at,
         })),
       );
+      return data.total_count > data.workflow_runs.length
+        ? { ...summary, truncated: true }
+        : summary;
     } catch (err) {
       throw new Error(
         `GitHub: failed to get workflow run status for ${owner}/${repo}@${ref}: ${(err as Error).message}`,

@@ -115,6 +115,8 @@ export interface InvestigationFailedData {
 
 export type SSEMessage =
   | { event: "investigation.started"; data: InvestigationStartedData }
+  | { event: "answer.reset"; data: Record<string, never> }
+  | { event: "answer.delta"; data: { text: string } }
   | { event: "source.started"; data: SourceActivityData }
   | { event: "source.completed"; data: SourceActivityData }
   | { event: "assessment.started"; data: AssessmentActivityData }

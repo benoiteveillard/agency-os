@@ -13,9 +13,12 @@ export default defineConfig({
     emptyOutDir: true,
   },
   server: {
+    // changeOrigin stays off so the browser's Host reaches the server: its
+    // same-origin check compares Origin against Host, and a rewritten Host
+    // (127.0.0.1:3000) turns every dev request into a 403.
     proxy: {
-      "/api": "http://127.0.0.1:3000",
-      "/health": "http://127.0.0.1:3000",
+      "/api": { target: "http://127.0.0.1:3000", changeOrigin: false },
+      "/health": { target: "http://127.0.0.1:3000", changeOrigin: false },
     },
   },
 });

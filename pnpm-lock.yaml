@@ -196,6 +196,9 @@ importers:
       '@linear/sdk':
         specifier: 95.0.0
         version: 95.0.0(graphql@17.0.2)
+      zod:
+        specifier: 4.6.7
+        version: 4.6.7
 
   packages/integrations/linear-mcp-client:
     dependencies:
@@ -205,6 +208,9 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: 1.32.2
         version: 1.32.2(zod@4.6.7)
+      zod:
+        specifier: 4.6.7
+        version: 4.6.7
     devDependencies:
       '@agency-os/mcp-linear':
         specifier: workspace:*

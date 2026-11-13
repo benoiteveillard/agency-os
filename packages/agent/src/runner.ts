@@ -56,9 +56,10 @@ const TOOLS_WITH_CACHE: Anthropic.Beta.Messages.BetaTool[] = TOOLS.map(
       : tool,
 );
 // Billed on what's generated, not on this ceiling, and it also has to cover
-// the model's own thinking on the same turn. 16000 is the largest value that
-// stays comfortably under the SDK's non-streaming timeout. Hitting it no longer
-// risks a silent truncation: see the stop_reason handling in investigate().
+// the model's own thinking on the same turn. Requests are streamed, so this is
+// no longer bound by the SDK's non-streaming timeout; raising it is a separate
+// choice to measure, not a side effect of streaming. Hitting it never risks a
+// silent truncation: see the stop_reason handling below.
 const MAX_TOKENS = 16000;
 // Safety cap on the tool-use loop so a confused model can't run forever.
 const MAX_TOOL_TURNS = 8;
@@ -102,6 +103,15 @@ export function afterLastFallback(
   return boundary === -1 ? content : content.slice(boundary + 1);
 }
 
+/**
+ * Live text of the model turn in progress. "reset" discards everything sent so
+ * far: a new turn started, or a fallback model took over and the declined
+ * model's partial text no longer counts. The final turn's text is the answer;
+ * the result, not this stream, remains the authoritative record of it.
+ */
+export type AnswerTextUpdate =
+  { type: "delta"; text: string } | { type: "reset" };
+
 export interface InvestigateOptions {
   anthropicApiKey: string;
   model?: string;
@@ -115,6 +125,8 @@ export interface InvestigateOptions {
    * further model calls are made, so nothing more is billed.
    */
   signal?: AbortSignal;
+  /** Receives the answer as it's written. Must not throw; it's display only. */
+  onAnswerText?: (update: AnswerTextUpdate) => void;
 }
 
 /**
@@ -132,7 +144,7 @@ export async function investigate(
     timeout: MODEL_REQUEST_TIMEOUT_MS,
   });
   const model = options.model ?? DEFAULT_MODEL;
-  const { tracer, parentSpan, signal } = options;
+  const { tracer, parentSpan, signal, onAnswerText } = options;
   // Array-of-blocks form (rather than a plain string) so the system prompt
   // itself can carry a cache breakpoint — see TOOLS_WITH_CACHE above for
   // why this matters. Per-call, not module-level: varies with
@@ -187,7 +199,9 @@ export async function investigate(
 
     let response: Anthropic.Beta.Messages.BetaMessage;
     try {
-      response = await client.beta.messages.create(
+      // Streamed so the reader sees the answer as it's written; the loop
+      // itself still works on the complete message, exactly as before.
+      const stream = client.beta.messages.stream(
         {
           ...(SERVER_FALLBACK_MODELS.has(model)
             ? { betas: [SERVER_FALLBACK_BETA], fallbacks: "default" as const }
@@ -201,6 +215,23 @@ export async function investigate(
         },
         { signal },
       );
+      if (onAnswerText) {
+        stream.on("streamEvent", (event) => {
+          if (
+            event.type === "message_start" ||
+            (event.type === "content_block_start" &&
+              event.content_block.type === "fallback")
+          ) {
+            onAnswerText({ type: "reset" });
+          } else if (
+            event.type === "content_block_delta" &&
+            event.delta.type === "text_delta"
+          ) {
+            onAnswerText({ type: "delta", text: event.delta.text });
+          }
+        });
+      }
+      response = await stream.finalMessage();
     } catch (err) {
       // An abort surfaces here as the SDK's own error; the signal's reason says
       // why it happened (a deadline, a disconnected client).

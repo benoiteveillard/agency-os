@@ -6,7 +6,10 @@ import type {
 import type { FixtureOutcome } from "./types.js";
 
 export interface LinearFixtureConfig {
-  listProjectIssues: FixtureOutcome<ProjectIssuesResult>;
+  /** `truncated` defaults to false, so fixtures only state it when they test it. */
+  listProjectIssues: FixtureOutcome<
+    Omit<ProjectIssuesResult, "truncated"> & { truncated?: boolean }
+  >;
   /** Absent unless the scenario exercises the post-write read-back path. */
   getIssue?: FixtureOutcome<ProjectIssue>;
 }
@@ -17,7 +20,7 @@ export class FixtureIssueTracker implements IssueTracker {
   async listProjectIssues(_projectId: string): Promise<ProjectIssuesResult> {
     const outcome = this.config.listProjectIssues;
     if (!outcome.ok) throw new Error(outcome.error);
-    return outcome.value;
+    return { truncated: false, ...outcome.value };
   }
 
   async getIssue(idOrIdentifier: string): Promise<ProjectIssue> {

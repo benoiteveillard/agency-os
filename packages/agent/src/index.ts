@@ -1,5 +1,5 @@
 export { investigate, dedupeEvidence } from "./runner.js";
-export type { InvestigateOptions } from "./runner.js";
+export type { AnswerTextUpdate, InvestigateOptions } from "./runner.js";
 export { TOOLS, executeTool } from "./tools.js";
 export type {
   AgentDependencies,

@@ -1,5 +1,6 @@
 import type {
   SlackMessage,
+  SlackMessagePage,
   SlackMessageSource,
 } from "@agency-os/integration-slack";
 import type { FixtureOutcome } from "./types.js";
@@ -13,16 +14,16 @@ export interface SlackFixtureConfig {
 export class FixtureSlackSource implements SlackMessageSource {
   constructor(private readonly config: SlackFixtureConfig) {}
 
-  async getChannelMessages(_channelId: string): Promise<SlackMessage[]> {
+  async getChannelMessages(_channelId: string): Promise<SlackMessagePage> {
     const outcome = this.config.channelMessages;
     if (!outcome.ok) throw new Error(outcome.error);
-    return outcome.value;
+    return { messages: outcome.value, truncated: false };
   }
 
   async getThread(
     _channelId: string,
     threadTs: string,
-  ): Promise<SlackMessage[]> {
+  ): Promise<SlackMessagePage> {
     const outcome = this.config.threadsByTs[threadTs];
     if (!outcome) {
       throw new Error(
@@ -30,6 +31,6 @@ export class FixtureSlackSource implements SlackMessageSource {
       );
     }
     if (!outcome.ok) throw new Error(outcome.error);
-    return outcome.value;
+    return { messages: outcome.value, truncated: false };
   }
 }
